@@ -8,10 +8,19 @@ import { useTheme, type ThemeMode } from "../theme";
 // Calm vs urgent microcopy, keyed by Severity. One place so tone stays
 // consistent (and is easy to localize later).
 function severityCopy(
+  snapshot: Snapshot | null,
   overall: Severity,
   failingList: string | null,
   cutOff: boolean,
 ): { head: string; sub: string } {
+  // Nothing measured yet is not "All clear" (audit B07).
+  const services = snapshot?.lists.flatMap((l) => l.services) ?? null;
+  if (snapshot?.lists.length === 0)
+    return { head: "Nothing to watch", sub: "Add a list to start monitoring." };
+  if (services?.length === 0)
+    return { head: "Nothing to watch", sub: "Add a service to start monitoring." };
+  if (!services || services.every((s) => s.state === "checking"))
+    return { head: "Checking…", sub: "Checking your services." };
   if (cutOff)
     return {
       head: "You're offline",
@@ -108,7 +117,7 @@ export function StatusHero({
   const overall: Severity = snapshot?.overall ?? "green";
   const wan = snapshot?.wan ?? null;
   const failingList = snapshot?.lists.find((l) => l.all_down)?.name ?? null;
-  const copy = severityCopy(overall, failingList, snapshot?.cut_off ?? false);
+  const copy = severityCopy(snapshot, overall, failingList, snapshot?.cut_off ?? false);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);

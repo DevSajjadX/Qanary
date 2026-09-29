@@ -4,9 +4,11 @@
  *
  * Scenarios:
  *   1. Initial seeded snapshot renders correct status (green → "All clear")
- *   2. Refresh button → `refresh_now` invoked, UI re-renders with result
+ *   2. Refresh button → `refresh_now` invoked
  *   3. Add-list modal → `add_list` invoked with parsed args
  *   4. Settings modal → `update_settings` invoked after changing a field
+ *   5. Settings Config card → Export / Import buttons
+ *   6. List reorder survives a `service-update` delta
  */
 import { test, expect } from "./fixtures";
 
@@ -83,4 +85,47 @@ test("5 — settings panel shows Config card with Export and Import buttons", as
   await expect(page.getByText("Config", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /export/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /import/i })).toBeVisible();
+});
+
+// R3: a reorder painted without moving the delta merge base was reverted by the next
+// per-service update (the backend's probe results keep arriving while you drag).
+test("6 — a list reorder survives the next service-update", async ({
+  mockedPage: page,
+  getInvokedCmds,
+  emitEvent,
+}) => {
+  const names = page.locator(".list-name-text");
+  await expect(names).toHaveText(["Internet", "Intranet"]);
+
+  await page.getByTitle("List options").first().click();
+  await page.getByRole("button", { name: "Edit order" }).click();
+
+  const grip = page.locator(".list-grip-btn");
+  const from = (await grip.nth(1).boundingBox())!;
+  const to = (await grip.nth(0).boundingBox())!;
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width / 2, to.y - 10, { steps: 12 });
+  await page.mouse.up();
+  await expect(names).toHaveText(["Intranet", "Internet"]);
+  await expect.poll(() => getInvokedCmds()).toContain("reorder_lists");
+
+  await emitEvent("service-update", {
+    list_id: "internet",
+    service: {
+      id: "s1",
+      label: "Google",
+      state: "up",
+      endpoints: [{ id: "e1", host: "google.com", state: "up", latency_ms: 25 }],
+    },
+    list_all_down: false,
+    overall: "green",
+    cut_off: false,
+    settled: true,
+  });
+  await expect(page.getByText("25 ms")).toBeVisible();
+  await expect(names).toHaveText(["Intranet", "Internet"]);
+
+  await page.getByRole("button", { name: /^done$/i }).click();
+  await expect(names).toHaveText(["Intranet", "Internet"]);
 });

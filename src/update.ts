@@ -7,16 +7,17 @@ export interface UpdateInfo {
 }
 
 let pending: Update | null = null;
+// Set once a download starts. From then on `pending` is the handle being (or already) written to
+// disk, and `installAndRelaunch` must install exactly that one — a newer release found by a later
+// check waits for the next launch (audit A12).
+let committed = false;
 
 /** Returns update info if a newer version is available, null otherwise. */
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   try {
     const update = await check();
     if (!update?.available) return null;
-    // Only replace the pending handle when the version actually changes; a same-version
-    // re-check (background interval) must not clobber a handle that has already been
-    // downloaded — installAndRelaunch() depends on it.
-    if (pending?.version !== update.version) pending = update;
+    if (!committed && pending?.version !== update.version) pending = update;
     return { version: update.version, body: update.body ?? null };
   } catch (e) {
     if (String(e).toLowerCase().includes("your app is up to date")) return null;
@@ -31,17 +32,23 @@ export async function downloadUpdate(
   if (!pending) throw new Error("no pending update");
   let total = 0;
   let received = 0;
-  await pending.download((event) => {
-    if (event.event === "Started") {
-      total = event.data.contentLength ?? 0;
-      onProgress(0);
-    } else if (event.event === "Progress") {
-      received += event.data.chunkLength;
-      onProgress(total > 0 ? Math.min(99, Math.round((received / total) * 100)) : 0);
-    } else if (event.event === "Finished") {
-      onProgress(100);
-    }
-  });
+  committed = true;
+  try {
+    await pending.download((event) => {
+      if (event.event === "Started") {
+        total = event.data.contentLength ?? 0;
+        onProgress(0);
+      } else if (event.event === "Progress") {
+        received += event.data.chunkLength;
+        onProgress(total > 0 ? Math.min(99, Math.round((received / total) * 100)) : 0);
+      } else if (event.event === "Finished") {
+        onProgress(100);
+      }
+    });
+  } catch (e) {
+    committed = false; // nothing usable on disk — a newer release may replace it again
+    throw e;
+  }
 }
 
 /** Installs the downloaded update and relaunches the app. */

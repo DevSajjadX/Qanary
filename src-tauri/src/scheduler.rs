@@ -7,9 +7,10 @@
 //!
 //! This module is heavily commented — the reader is new to Rust.
 
-use crate::models::{Service, ServiceDelta, ServiceStatus, Snapshot};
+use crate::models::{Service, ServiceDelta, ServiceStatus, Severity, Snapshot};
 use crate::state::AppState;
 use crate::{EVENT_SERVICE, EVENT_STATUS};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -24,17 +25,18 @@ use tauri::{AppHandle, Emitter, Manager};
 /// the fixed curve is wrong.
 const BACKOFF_MAX_SHIFT: u32 = 4; // 2^4 = 16× base at most
 
-/// Hard ceiling on the backed-off interval, independent of `base`. Keeps a long-configured base
-/// from compounding into minutes of silence while a Service is down.
+/// Ceiling on how far backoff can *grow* the interval. Keeps a short base from compounding into
+/// minutes of silence while a Service is down. Never shortens a base the user set above it.
 const BACKOFF_CEILING: Duration = Duration::from_secs(120);
 
 /// Grow the interval with the consecutive-failure streak: `base * 2^min(streak, MAX_SHIFT)`,
-/// then clamp to `BACKOFF_CEILING`. A streak of 0 (healthy / just recovered) returns `base`.
+/// capped at `max(BACKOFF_CEILING, base)`. A streak of 0 (healthy / just recovered) returns `base`,
+/// and a configured 600s stays 600s (audit A07).
 pub fn backoff(base: Duration, fail_streak: u32) -> Duration {
     let shift = fail_streak.min(BACKOFF_MAX_SHIFT);
     // `base * 2^shift` via left-shift on the secs; saturating so we never overflow.
     let grown = base.saturating_mul(1u32 << shift);
-    grown.min(BACKOFF_CEILING)
+    grown.min(BACKOFF_CEILING.max(base))
 }
 
 /// Spread of the random jitter as a fraction of the interval (±12.5%). Small relative to the
@@ -94,6 +96,7 @@ async fn run_service_task(
     list_id: String,
     service: Service,
     mut signal_rx: tokio::sync::broadcast::Receiver<()>,
+    generation: u64,
 ) {
     // Task-local failure streak — drives backoff. Not stored in AppState; lives only here.
     let mut fail_streak: u32 = 0;
@@ -116,7 +119,7 @@ async fn run_service_task(
                 cfg.critical_interval_secs,
                 cfg.noncritical_interval_secs,
             ));
-            (base, cfg.timeout_ms, state.client.clone(), state.probe_sem.clone())
+            (base, cfg.timeout_ms, state.probe_client.clone(), state.probe_sem.clone())
         };
 
         // Probe with NO lock held (network I/O).
@@ -129,11 +132,9 @@ async fn run_service_task(
             fail_streak = 0;
         }
 
-        // Merge this Service's status into the shared snapshot and recompute rollups. The lock is
-        // held only for this synchronous block — never across an await (state.rs invariant).
-        if let Some(delta) = apply_service_status(&app, &list_id, status) {
-            let overall = delta.overall;
-            let _ = app.emit(EVENT_SERVICE, &delta);
+        // Merge this Service's status into the shared snapshot, recompute rollups, and emit the
+        // delta. The lock is held only for this synchronous block — never across an await.
+        if let Some(overall) = apply_service_status(&app, &list_id, generation, status) {
             crate::tray::update_icon(&app, overall);
         }
 
@@ -153,15 +154,40 @@ async fn run_service_task(
 }
 
 /// Replace one Service's status inside the live snapshot, recompute that List's `all_down` and the
-/// overall Severity, and return the Status delta to emit. Returns `None` if there's no snapshot yet
-/// or the list/service id is unknown (nothing to update).
+/// overall Severity, emit the Status delta, and return the new overall Severity. Returns `None`
+/// (and emits nothing) for a result from a superseded task generation, before the first snapshot,
+/// or for an unknown list/service id.
 ///
 /// Load-bearing: the snapshot `Mutex` is taken and dropped entirely within this synchronous
-/// function — no `.await` happens while it's held.
-fn apply_service_status(app: &AppHandle, list_id: &str, status: ServiceStatus) -> Option<ServiceDelta> {
+/// function — no `.await` happens while it's held. The generation check and the emit both happen
+/// under it, so a stale result can't slip in after `respawn_tasks` and deltas leave in order.
+fn apply_service_status(
+    app: &AppHandle,
+    list_id: &str,
+    generation: u64,
+    status: ServiceStatus,
+) -> Option<Severity> {
     let state = app.state::<AppState>();
     let mut guard = state.snapshot.lock().unwrap();
-    let snap = guard.as_mut()?;
+    let current = state.generation.load(Ordering::SeqCst);
+    let delta = accept_result(guard.as_mut()?, current, generation, list_id, status)?;
+    let _ = app.emit(EVENT_SERVICE, &delta);
+    Some(delta.overall)
+}
+
+/// Apply a probe result only if it belongs to the live task generation. `abort()` lands only at an
+/// await, so a task from before the last `respawn_tasks` can still finish its probe; its result
+/// describes a config that no longer exists and must not touch the fresh snapshot.
+fn accept_result(
+    snap: &mut Snapshot,
+    current_generation: u64,
+    generation: u64,
+    list_id: &str,
+    status: ServiceStatus,
+) -> Option<ServiceDelta> {
+    if generation != current_generation {
+        return None;
+    }
     recompute_delta(snap, list_id, status)
 }
 
@@ -201,8 +227,12 @@ fn recompute_delta(snap: &mut Snapshot, list_id: &str, status: ServiceStatus) ->
 // Supervisor + WAN task
 // ---------------------------------------------------------------------------
 
-/// Abort all running Service probe tasks and spawn a fresh one per enabled Service. Called on
-/// startup and after every config mutation.
+/// Abort all running Service probe tasks, paint Checking, and spawn a fresh one per enabled
+/// Service. Called on startup and after every config mutation.
+///
+/// Order matters: abort → bump generation → Checking → spawn. Bumping before the Checking paint
+/// means any old task still finishing its probe is dropped by `apply_service_status` instead of
+/// overwriting the Checking state with a result for the old config.
 ///
 /// ponytail: abort-all then respawn-all — mutations are rare and user-driven, so per-Service task
 /// diffing isn't worth it. Add diffing only if respawn churn ever shows up as a problem.
@@ -216,6 +246,8 @@ pub fn respawn_tasks(app: &AppHandle) {
             handle.abort();
         }
     }
+    let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    crate::emit_checking(app);
 
     // Snapshot what to spawn from the current config (clone out, drop the lock).
     let plan: Vec<(String, Service)> = {
@@ -239,7 +271,7 @@ pub fn respawn_tasks(app: &AppHandle) {
         // tauri::async_runtime::spawn carries its own runtime handle, so this works from `setup`
         // (the main thread, with no Tokio reactor in scope). Its JoinHandle has `.abort()` too.
         handles.push(tauri::async_runtime::spawn(run_service_task(
-            app, list_id, service, signal_rx,
+            app, list_id, service, signal_rx, generation,
         )));
     }
     *state.tasks.lock().unwrap() = handles;
@@ -275,7 +307,7 @@ pub fn spawn_wan_task(app: &AppHandle) {
             let (client, providers) = {
                 let state = app.state::<AppState>();
                 let cfg = state.config.lock().unwrap();
-                (state.client.clone(), cfg.ip_providers.clone())
+                (state.wan_client.clone(), cfg.ip_providers.clone())
             };
 
             // Capture the fetch's own outcome — this (not whether a WAN IP is cached) drives the
@@ -286,28 +318,30 @@ pub fn spawn_wan_task(app: &AppHandle) {
                 *app.state::<AppState>().wan.lock().unwrap() = Some(info);
             }
 
-            // Rebuild a full snapshot from the current per-Service statuses + the fresh WAN, store
-            // and emit it. The Service tasks own the lists; we only refresh `wan` + `overall`.
-            let snapshot = {
+            // Put the fresh WAN into the stored snapshot and emit it (under the snapshot lock, so
+            // it can't overtake a later delta). The Service tasks own the lists.
+            let overall = {
                 let state = app.state::<AppState>();
                 let wan = state.wan.lock().unwrap().clone();
                 let mut guard = state.snapshot.lock().unwrap();
                 guard.as_mut().map(|snap| {
                     snap.wan = wan;
-                    snap.clone()
+                    let _ = app.emit(EVENT_STATUS, &*snap);
+                    snap.overall
                 })
             };
-            if let Some(snap) = snapshot {
-                let overall = snap.overall;
-                let _ = app.emit(EVENT_STATUS, &snap);
+            if let Some(overall) = overall {
                 crate::tray::update_icon(&app, overall);
             }
 
-            // Refresh on schedule; retry sooner after a failed fetch; wake on manual refresh.
+            // Refresh on schedule; retry sooner after a failed fetch; wake on manual refresh or
+            // when the providers change.
             let wait = next_wan_delay(last_ok);
+            let state = app.state::<AppState>();
             tokio::select! {
                 _ = tokio::time::sleep(wait) => {}
                 _ = signal_rx.recv() => {}
+                _ = state.wan_now.notified() => {}
             }
         }
     });
@@ -329,6 +363,17 @@ mod tests {
         assert_eq!(backoff(base, 9), backoff(base, 4));
         // A larger base hits the ceiling.
         assert_eq!(backoff(Duration::from_secs(60), 4), BACKOFF_CEILING);
+    }
+
+    /// A base above the ceiling is never shortened by backoff (A07): 600s stays 600s.
+    #[test]
+    fn backoff_never_shortens_a_long_base() {
+        for secs in [120, 600] {
+            let base = Duration::from_secs(secs);
+            assert_eq!(backoff(base, 0), base);
+            assert_eq!(backoff(base, 4), base);
+        }
+        assert_eq!(backoff(Duration::from_secs(60), 0), Duration::from_secs(60));
     }
 
     #[test]
@@ -412,6 +457,16 @@ mod tests {
         // Written back into the snapshot too.
         assert!(snap.lists[0].all_down);
         assert_eq!(snap.overall, Severity::Red);
+    }
+
+    #[test]
+    fn stale_generation_result_is_dropped() {
+        let mut snap = snap_with(true, vec![svc("a", ServiceState::Checking)]);
+        assert!(accept_result(&mut snap, 2, 1, "l1", svc("a", ServiceState::Down)).is_none());
+        assert_eq!(snap.lists[0].services[0].state, ServiceState::Checking, "snapshot untouched");
+
+        assert!(accept_result(&mut snap, 2, 2, "l1", svc("a", ServiceState::Down)).is_some());
+        assert_eq!(snap.lists[0].services[0].state, ServiceState::Down);
     }
 
     #[test]

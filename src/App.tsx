@@ -2,18 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import * as api from "./api";
 import type { ChangelogEntry } from "./api";
-import type { Config, ListStatus, ServiceDraft, Snapshot } from "./types";
+import type { Config, ListStatus, Service, ServiceDraft, Snapshot } from "./types";
 import { StatusHero } from "./components/StatusHero";
 import { ServiceList } from "./components/ServiceList";
 import { Settings } from "./components/Settings";
 import { ListModal } from "./components/ListModal";
 import { ServiceModal } from "./components/ServiceModal";
 import { ChangelogModal } from "./components/ChangelogModal";
-import { serviceToText } from "./utils/parseServices";
 import { checkForUpdate, downloadUpdate, installAndRelaunch } from "./update";
 import { nextUpdatePhase } from "./utils/updateCheck";
 import { criticalTransitions, blockedTransitions } from "./utils/transitions";
-import { fireBatch, type BatchEntry } from "./utils/alerts";
+import { fireBatch, reconcilePending, type BatchEntry } from "./utils/alerts";
 import { mergeDelta } from "./utils/mergeDelta";
 import {
   DndContext,
@@ -29,10 +28,11 @@ import { CSS } from "@dnd-kit/utilities";
 
 // Alert batch window — idle-debounced, not fixed. Because Status deltas arrive per-Service,
 // one probe round's edges land spread out, so the batch re-arms on every edge and only flushes
-// once the round goes quiet. Quiet = `timeout_ms + 1s`: a straggling probe wave lands at most
-// one timeout behind the previous one, so the configured timeout is the honest input (a
-// hard-coded 4s would be a silent duplicate of it). ALERT_MAX_MS caps a batch that keeps
-// re-arming, so an alert can never be starved indefinitely.
+// once the round goes quiet. Quiet = `timeout_ms + 1s`. `timeout_ms` is only the TCP-connect
+// timeout (the HTTPS step has its own 5s), so a straggler can land later than this; that's
+// harmless because a round's snapshot only settles once its last probe lands, and unsettled
+// snapshots are never diffed (ADR-0029). ALERT_MAX_MS caps a batch that keeps re-arming, so an
+// alert can never be starved indefinitely.
 const ALERT_QUIET_PAD_MS = 1000;
 const ALERT_MAX_MS = 12_000;
 // Fallback quiet base when config hasn't loaded yet — matches the backend default timeout.
@@ -66,7 +66,7 @@ type ModalState =
       listId: string;
       serviceId: string;
       listName: string;
-      initial: string;
+      initial: Service;
     }
   | { kind: "settings" };
 
@@ -87,7 +87,7 @@ function SortableListItem({
 }: Omit<React.ComponentProps<typeof ServiceList>, keyof GripProps> & { list: ListStatus }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: list.id });
   const sortStyle: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
+    transform: CSS.Translate.toString(transform),
     transition,
   };
   return (
@@ -104,13 +104,18 @@ function SortableListItem({
 
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [config, setConfig] = useState<Config | null>(null);
+  const [config, setConfigState] = useState<Config | null>(null);
   const [modal, setModal] = useState<ModalState>(null);
-  const [updatePhase, setUpdatePhase] = useState<UpdatePhase | null>(null);
+  const [updatePhase, setUpdatePhaseState] = useState<UpdatePhase | null>(null);
+  const [updateVersion, setUpdateVersionState] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [reorderMode, setReorderMode] = useState(false);
   // Changelog shown once after a self-update (auto) or on demand via Settings button.
   const [changelog, setChangelog] = useState<ChangelogEntry[] | null>(null);
+  // One inline message for anything the backend refused or couldn't save, plus the startup
+  // "config was unusable and moved aside" warning. Dismissed by the user.
+  const [notice, setNotice] = useState<string | null>(null);
+  const report = (err: unknown) => setNotice(String(err));
   // The last snapshot handed to the UI — the merge base for per-Service deltas.
   const prevSnapshotRef = useRef<Snapshot | null>(null);
   // The last *settled* snapshot — the Transition baseline. Unsettled snapshots are displayed but
@@ -118,20 +123,28 @@ function App() {
   // not "recovered" (ADR-0029).
   const baselineRef = useRef<Snapshot | null>(null);
 
-  // Keep a ref to the latest config so the status-update callback reads fresh flags
-  // without needing to re-subscribe whenever config changes.
+  // The latest config for timer/event callbacks, written in the same call as the state — an effect
+  // would leave it stale until React commits, and a flush in that gap would reconcile pending
+  // alerts against the pre-delete config.
   const configRef = useRef<Config | null>(null);
-  useEffect(() => {
-    configRef.current = config;
-  }, [config]);
+  function setConfig(c: Config) {
+    configRef.current = c;
+    setConfigState(c);
+  }
 
-  // Mirrors for the update state — readable inside interval/event callbacks without
-  // stale-closure issues (same pattern as configRef above).
+  // App is the only owner of update state (the hero button and Settings both render it), so two
+  // views can't hold two answers (audit A12). The refs mirror it synchronously for callbacks: a
+  // check fired right after `setUpdatePhase("downloading")` must already see it.
   const updatePhaseRef = useRef<UpdatePhase | null>(null);
   const availableVersionRef = useRef<string | null>(null);
-  useEffect(() => {
-    updatePhaseRef.current = updatePhase;
-  }, [updatePhase]);
+  function setUpdatePhase(phase: UpdatePhase | null) {
+    updatePhaseRef.current = phase;
+    setUpdatePhaseState(phase);
+  }
+  function setUpdateVersion(version: string | null) {
+    availableVersionRef.current = version;
+    setUpdateVersionState(version);
+  }
 
   // Timestamp of the last completed update check (ms). 0 = never checked.
   const lastCheckRef = useRef<number>(0);
@@ -147,11 +160,27 @@ function App() {
   // Wall-clock time of the last edge that armed the batch. Read only to spot a batch that
   // outlived a process suspension — see armFlush.
   const lastEdgeAtRef = useRef(0);
-  // Wall-clock time of the last heartbeat tick. A large gap means the process was suspended.
-  const lastTickRef = useRef(0);
+  // Wall-clock time the process was last seen running (see detectWake). A large gap means it was
+  // suspended.
+  const lastTickRef = useRef(Date.now());
   // While non-null, the deadline (ms) of the open post-wake grace window: snapshots repaint but
   // are not diffed, and the baseline stays at the pre-sleep state.
   const wakeGraceUntilRef = useRef<number | null>(null);
+  const graceTimerRef = useRef<number | null>(null);
+
+  /**
+   * Did the process just come back from a suspension (system sleep / App Nap)? Any callback can
+   * be the first to run after resume — the 4s alert timer often beats the 5s heartbeat — so each
+   * entry point asks before acting on what it holds (audit A09).
+   */
+  function detectWake(): boolean {
+    const now = Date.now();
+    const gap = now - lastTickRef.current;
+    lastTickRef.current = now;
+    if (gap <= WAKE_GAP_MS) return false;
+    handleWake();
+    return true;
+  }
 
   // (Re-)arm the flush timer. Called on every edge-bearing snapshot, so each new edge pushes
   // the flush out by another quiet period — up to the hard cap measured from batch start.
@@ -184,7 +213,9 @@ function App() {
   function endWakeGrace(s: Snapshot | null) {
     wakeGraceUntilRef.current = null;
     if (s?.settled) diffAgainstBaseline(s);
-    if (pendingRef.current.size > 0 && timerRef.current === null) armFlush();
+    // A cut-off edge alone is owed too: it has no list id, so it never enters pendingRef (A10).
+    const owed = pendingRef.current.size > 0 || cutOffEdgeRef.current;
+    if (owed && timerRef.current === null) armFlush();
   }
 
   /**
@@ -201,7 +232,7 @@ function App() {
     // The window must close even if no further snapshot arrives: a Service that settled to Down
     // backs off to 120s (scheduler::BACKOFF_CEILING), which would otherwise hold a real
     // "you're offline" for that long.
-    window.setTimeout(() => {
+    graceTimerRef.current = window.setTimeout(() => {
       // Superseded by a later wake, or already closed by a snapshot.
       if (wakeGraceUntilRef.current !== deadline) return;
       endWakeGrace(prevSnapshotRef.current);
@@ -210,7 +241,11 @@ function App() {
 
   function flushAlerts() {
     timerRef.current = null;
+    // Fired first after a sleep: what it holds describes the sleep, not the user's present.
+    // handleWake keeps it pending; the grace window pays it out.
+    if (detectWake()) return;
     batchStartRef.current = null;
+    pendingRef.current = reconcilePending(pendingRef.current, configRef.current?.lists);
     const cutOffEdge = cutOffEdgeRef.current;
     cutOffEdgeRef.current = false;
 
@@ -266,6 +301,7 @@ function App() {
   }
 
   function handleSnapshot(s: Snapshot) {
+    detectWake();
     if (s.settled) {
       const graceUntil = wakeGraceUntilRef.current;
       if (graceUntil === null) {
@@ -277,31 +313,49 @@ function App() {
       }
       // Otherwise: still inside the window — repaint only, baseline untouched.
     }
+    showSnapshot(s);
+  }
+
+  /**
+   * The only way a snapshot reaches the screen. Keeps the delta merge base (`prevSnapshotRef`) and
+   * the rendered state in step: a `setSnapshot` that skipped the ref would let the next
+   * `service-update` merge onto an older snapshot and revert whatever changed (audit A05/R3).
+   */
+  function showSnapshot(s: Snapshot) {
     prevSnapshotRef.current = s;
     setSnapshot(s);
   }
 
-  // Centralised update check — safe to call from startup, interval, or visibility event.
-  // Skips while a download is in progress (next interval will catch it instead).
-  async function runUpdateCheck() {
-    if (updatePhaseRef.current === "downloading") return;
-    lastCheckRef.current = Date.now();
-    try {
-      const info = await checkForUpdate();
-      const next = nextUpdatePhase(
-        { phase: updatePhaseRef.current, version: availableVersionRef.current },
-        info,
-      );
-      if (next.phase !== updatePhaseRef.current) setUpdatePhase(next.phase);
-      availableVersionRef.current = next.version;
-    } catch {
-      // Silently ignore — failed background check is non-fatal.
-    }
+  /** A layout write (reorder/collapse) was refused: say why and repaint from the backend's truth. */
+  function layoutRejected(err: unknown) {
+    report(err);
+    api.getSnapshot().then((s) => s && handleSnapshot(s));
   }
 
+  /**
+   * The one update check — startup, interval, visibility and Settings' button all call it.
+   * Resolves true when an update is available/downloading/ready; rejects when the check failed.
+   * Skipped while a download is in progress (that download is the answer).
+   */
+  async function runUpdateCheck(): Promise<boolean> {
+    if (updatePhaseRef.current === "downloading") return true;
+    lastCheckRef.current = Date.now();
+    const info = await checkForUpdate();
+    const next = nextUpdatePhase(
+      { phase: updatePhaseRef.current, version: availableVersionRef.current },
+      info,
+    );
+    if (next.phase !== updatePhaseRef.current) setUpdatePhase(next.phase);
+    setUpdateVersion(next.version);
+    return next.phase !== null;
+  }
+  // A failed background check is non-fatal; the next interval retries.
+  const backgroundUpdateCheck = () => void runUpdateCheck().catch(() => {});
+
   useEffect(() => {
-    api.getSnapshot().then((s) => s && handleSnapshot(s));
-    api.getConfig().then(setConfig);
+    api.getSnapshot().then((s) => s && handleSnapshot(s), report);
+    api.getConfig().then(setConfig, report);
+    api.takeLoadWarning().then((w) => w && setNotice(w));
     // Show the "What's new" changelog once when the app version changed since last launch.
     // Backend reads the bundled CHANGELOG, so this fires for any update path (in-app or manual).
     api.takeNewChangelog().then((entries) => {
@@ -309,58 +363,55 @@ function App() {
     });
     // status-update = full snapshot (WAN refresh + initial). service-update = per-Service delta,
     // merged onto the latest snapshot before running the same transition/alert diff.
-    let unlistenStatus: (() => void) | undefined;
-    let unlistenService: (() => void) | undefined;
-    api.onStatusUpdate(handleSnapshot).then((fn) => {
-      unlistenStatus = fn;
-    });
+    // `listen` resolves asynchronously; an unmount before it does must still unlisten (B05).
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const keep = (fn: () => void) => (disposed ? fn() : unlisteners.push(fn));
+    api.onStatusUpdate(handleSnapshot).then(keep);
     api.onServiceUpdate((d) => {
       const base = prevSnapshotRef.current;
       if (!base) return;
       handleSnapshot(mergeDelta(base, d));
-    }).then((fn) => {
-      unlistenService = fn;
-    });
+    }).then(keep);
     // Startup check
-    void runUpdateCheck();
+    backgroundUpdateCheck();
     // Background interval: re-check every 6 h so long-running machines stay current.
-    const intervalId = window.setInterval(runUpdateCheck, UPDATE_CHECK_MS);
+    const intervalId = window.setInterval(backgroundUpdateCheck, UPDATE_CHECK_MS);
     // Wake detector: a tick that observes far more wall clock than its own interval means the
     // process was suspended (system sleep / App Nap).
-    lastTickRef.current = Date.now();
-    const heartbeatId = window.setInterval(() => {
-      const now = Date.now();
-      const gap = now - lastTickRef.current;
-      lastTickRef.current = now;
-      if (gap > WAKE_GAP_MS) handleWake();
-    }, WAKE_TICK_MS);
+    const heartbeatId = window.setInterval(detectWake, WAKE_TICK_MS);
     // Visibility re-check: webview timers throttle during laptop sleep; fire on focus
     // if at least one interval period has elapsed since the last check.
     function handleVisibilityChange() {
       if (document.visibilityState === "visible" &&
           Date.now() - lastCheckRef.current >= UPDATE_CHECK_MS) {
-        void runUpdateCheck();
+        backgroundUpdateCheck();
       }
     }
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
-      unlistenStatus?.();
-      unlistenService?.();
+      disposed = true;
+      unlisteners.forEach((fn) => fn());
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      if (graceTimerRef.current !== null) window.clearTimeout(graceTimerRef.current);
       window.clearInterval(intervalId);
       window.clearInterval(heartbeatId);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
-  async function handleDownload() {
+  /** Resolves true once the update is on disk. */
+  async function handleDownload(): Promise<boolean> {
+    if (updatePhaseRef.current !== "available") return updatePhaseRef.current === "ready";
     setUpdatePhase("downloading");
     setDownloadProgress(0);
     try {
       await downloadUpdate(setDownloadProgress);
       setUpdatePhase("ready");
+      return true;
     } catch {
       setUpdatePhase("available");
+      return false;
     }
   }
 
@@ -370,6 +421,10 @@ function App() {
     } catch {
       setUpdatePhase("ready");
     }
+  }
+
+  async function handleInstallNow() {
+    if (await handleDownload()) await handleInstall();
   }
 
   const lists = snapshot?.lists ?? [];
@@ -389,7 +444,7 @@ function App() {
       const cfg = await api.addServices(modal.listId, drafts);
       setConfig(cfg);
     } else if (modal?.kind === "editService") {
-      // Edit: use only the first parsed draft
+      // Edit mode always yields exactly one draft (separate Label + Endpoints fields).
       const draft = drafts[0];
       if (!draft) return;
       const cfg = await api.updateService(
@@ -405,27 +460,41 @@ function App() {
   // PointerSensor with a small activation distance so accidental clicks don't drag.
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
+  // Layout edits paint optimistically through showSnapshot (so the merge base moves with them);
+  // the backend then saves, applies the same layout to its live snapshot and pushes it.
   function handleListDragEnd(event: DragEndEvent) {
     const { active, over } = event;
-    if (!over || active.id === over.id || !snapshot) return;
-    const oldIndex = snapshot.lists.findIndex((l) => l.id === active.id);
-    const newIndex = snapshot.lists.findIndex((l) => l.id === over.id);
-    const reordered = arrayMove(snapshot.lists, oldIndex, newIndex);
-    setSnapshot({ ...snapshot, lists: reordered });
-    void api.reorderLists(reordered.map((l) => l.id));
+    const base = prevSnapshotRef.current;
+    if (!over || active.id === over.id || !base) return;
+    const oldIndex = base.lists.findIndex((l) => l.id === active.id);
+    const newIndex = base.lists.findIndex((l) => l.id === over.id);
+    const reordered = arrayMove(base.lists, oldIndex, newIndex);
+    showSnapshot({ ...base, lists: reordered });
+    api.reorderLists(reordered.map((l) => l.id)).then(setConfig, layoutRejected);
   }
 
   function handleReorderServices(listId: string, newIds: string[]) {
-    if (!snapshot) return;
-    const newLists = snapshot.lists.map((l) => {
+    const base = prevSnapshotRef.current;
+    if (!base) return;
+    const newLists = base.lists.map((l) => {
       if (l.id !== listId) return l;
       const reordered = newIds
         .map((id) => l.services.find((s) => s.id === id))
         .filter(Boolean) as ListStatus["services"];
       return { ...l, services: reordered };
     });
-    setSnapshot({ ...snapshot, lists: newLists });
-    void api.reorderServices(listId, newIds);
+    showSnapshot({ ...base, lists: newLists });
+    api.reorderServices(listId, newIds).then(setConfig, layoutRejected);
+  }
+
+  function handleToggleCollapse(listId: string, collapsed: boolean) {
+    const base = prevSnapshotRef.current;
+    if (!base) return;
+    showSnapshot({
+      ...base,
+      lists: base.lists.map((l) => (l.id === listId ? { ...l, collapsed } : l)),
+    });
+    api.setListCollapsed(listId, collapsed).then(setConfig, layoutRejected);
   }
 
   function handleOpenEdit(listId: string, serviceId: string, listName: string) {
@@ -437,7 +506,7 @@ function App() {
       listId,
       serviceId,
       listName,
-      initial: serviceToText(svc),
+      initial: svc,
     });
   }
 
@@ -445,11 +514,11 @@ function App() {
     <main className={`app${snapshot?.cut_off ? " cut-off" : ""}`}>
       <StatusHero
         snapshot={snapshot}
-        onRefresh={() => api.refreshNow().then(setSnapshot)}
+        onRefresh={api.refreshNow}
         onAddList={() => setModal({ kind: "addList" })}
         onOpenSettings={() => setModal({ kind: "settings" })}
         onResetConfig={() =>
-          api.resetConfig().then(() => window.location.reload())
+          api.resetConfig().then(() => window.location.reload(), report)
         }
         onEditOrder={() => setReorderMode(true)}
         updatePhase={updatePhase}
@@ -457,6 +526,15 @@ function App() {
         onDownload={handleDownload}
         onInstall={handleInstall}
       />
+
+      {notice && (
+        <div className="banner banner-critical notice" role="alert">
+          <span>{notice}</span>
+          <button className="notice-close" aria-label="Dismiss" onClick={() => setNotice(null)}>
+            ×
+          </button>
+        </div>
+      )}
 
       <div className="lists">
         {/* ponytail: reorderMode gate — DndContext only rendered when needed; avoids
@@ -470,8 +548,10 @@ function App() {
                   list={list}
                   reorderMode={true}
                   onReorderServices={handleReorderServices}
-                  onRemoveService={(lid, sid) => api.removeService(lid, sid)}
-                  onRemoveList={(lid) => api.removeList(lid)}
+                  onToggleCollapse={handleToggleCollapse}
+                  onEditOrder={() => setReorderMode(true)}
+                  onRemoveService={(lid, sid) => api.removeService(lid, sid).then(setConfig, report)}
+                  onRemoveList={(lid) => api.removeList(lid).then(setConfig, report)}
                   onEditList={(id, name, icon, critical) =>
                     setModal({ kind: "editList", id, name, icon, critical })
                   }
@@ -492,8 +572,10 @@ function App() {
               list={list}
               reorderMode={false}
               onReorderServices={handleReorderServices}
-              onRemoveService={(lid, sid) => api.removeService(lid, sid)}
-              onRemoveList={(lid) => api.removeList(lid)}
+              onToggleCollapse={handleToggleCollapse}
+              onEditOrder={() => setReorderMode(true)}
+              onRemoveService={(lid, sid) => api.removeService(lid, sid).then(setConfig, report)}
+              onRemoveList={(lid) => api.removeList(lid).then(setConfig, report)}
               onEditList={(id, name, icon, critical) =>
                 setModal({ kind: "editList", id, name, icon, critical })
               }
@@ -506,7 +588,17 @@ function App() {
             />
           ))
         )}
-        {lists.length === 0 && <p className="loading">Starting first probe…</p>}
+        {lists.length === 0 &&
+          (config?.lists.length === 0 ? (
+            <p className="loading">
+              No lists yet —{" "}
+              <button className="link-btn" onClick={() => setModal({ kind: "addList" })}>
+                Add list
+              </button>
+            </p>
+          ) : (
+            <p className="loading">Starting first probe…</p>
+          ))}
       </div>
 
       {reorderMode && (
@@ -549,23 +641,14 @@ function App() {
         config={config}
         open={modal?.kind === "settings"}
         onClose={() => setModal(null)}
-        onSave={(criticalInterval, noncriticalInterval, providers, downNotify, downSound, upNotify, upSound, blockedNotify, blockedSound, volume) =>
-          api
-            .updateSettings(
-              criticalInterval,
-              noncriticalInterval,
-              undefined,
-              providers,
-              downNotify,
-              downSound,
-              upNotify,
-              upSound,
-              blockedNotify,
-              blockedSound,
-              volume,
-            )
-            .then(setConfig)
-        }
+        onSave={(patch) => api.updateSettings(patch).then(setConfig)}
+        updater={{
+          phase: updatePhase,
+          version: updateVersion,
+          progress: downloadProgress,
+          check: runUpdateCheck,
+          installNow: handleInstallNow,
+        }}
         onShowReleaseNotes={() =>
           api.getChangelog().then((entries) => {
             if (entries.length > 0) setChangelog(entries);
@@ -575,7 +658,10 @@ function App() {
           api
             .importConfig(path)
             .then(() => window.location.reload())
-            .catch((e) => alert(`Import failed: ${e}`))
+            .catch((err) => {
+              setModal(null); // the notice renders behind the Settings modal
+              report(err);
+            })
         }
       />
     </main>

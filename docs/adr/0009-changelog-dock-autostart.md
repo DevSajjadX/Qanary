@@ -4,6 +4,10 @@
 - **Date:** 2026-06-22
 - **Deciders:** Esi-Abolfazl
 
+> **Amendment 2026-09-24:** the separate `set_hide_dock` command is gone — superseded in part by
+> [ADR-0030](0030-config-writes-never-lose-data.md). `hide_dock` is one field of the Settings save
+> (`update_settings`), and `apply_dock_policy` runs on every path that can change it.
+
 ## Context
 
 Three desktop-integration features were missing from Qanary:

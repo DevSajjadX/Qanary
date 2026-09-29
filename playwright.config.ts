@@ -3,7 +3,8 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "e2e",
   // Headless chromium; local-only (no CI)
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  // channel "chrome" = the installed Google Chrome, so no Playwright browser download is needed.
+  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"], channel: "chrome" } }],
   use: {
     baseURL: "http://localhost:1420",
   },

@@ -19,12 +19,12 @@
 - [x] DB/config migration system: versioned schema so each new version's config changes apply automatically for existing users on upgrade — integer `schema_version` + numbered `store::migrate` runner (ADR-0019)
 - [x] Wildcard endpoint probing (`*.host.com` → probe resolved subdomain)
 - [x] Notification sound volume — one level for all alert sounds (`notify_volume`, 0–100 in steps of 1, default 100), slider in the Critical-list alerts card. Volume 0 mutes the audio and leaves the three Sound toggles alone; `alerts.ts::soundAudible` is the one predicate for "this channel can reach the user", so a `{volume: 0, sound: true}` config can't silently swallow an outage. Does not touch the OS banners (ADR-0026, ADR-0028)
-- [ ] `updateSettings` / `Settings.onSave` positional-argument debt (ADR-0026 follow-up, still open) — 11 positional args on the invoke wrapper, 10 on the prop. Appending is safe (the Rust command takes named arguments, so a mismatch surfaces as a null) but a mid-list insertion would shift arguments silently. Move both to a single options object.
+- [x] `updateSettings` / `Settings.onSave` positional-argument debt (ADR-0026 follow-up) — replaced by one `SettingsPatch` object that also carries `hide_dock`, so Settings saves in one write (ADR-0030)
 - [ ] Backend "probe round complete" signal — the frontend currently *infers* a settled probe round from silence (alert batch re-armed per edge, quiet = `timeout_ms + 1s`, hard cap 12s — ADR-0027). Only the backend knows when a round actually finished. Emitting that would cut worst-case alert latency (up to 12s today), drop the cap, and close the one case where the cap can still let a cross-wave double alert through: a hand-edited `config.json` whose `timeout_ms` makes the quiet period exceed 12s (not reachable from Settings).
 - [ ] Wildcard `Reachable`-masking of a critical list's `all_down` (ADR-0024 follow-up) — a wildcard endpoint sitting in `reachable` keeps `fully_failing` from tripping even when every *real* endpoint of that service has failed, so the list never reports `all_down` and never alerts. Cut-off detection sidesteps it (its predicate ignores `fully_failing`) rather than fixing it.
 - [ ] Endpoint-status detection: classify by HTTP status code (403/401/500 + any error-range response) as a distinct blocked/degraded state, not just TCP/HTTPS reachability. Block-page content heuristics (HTTP 200 but wrong body) out of scope — not a problem for now.
 - [ ] Probe accuracy (own plan): confirm-before-flip (require K consecutive failures before showing Down — kill transient false outages); backoff on success only (keep fast retries while Down so recovery shows quickly, back off only stable-Up services); HEAD→GET fallback. Separate from the per-Service probe-task rewrite (`.claude/plans/2026-06-25-probe-system-rewrite-per-service-tasks.md`), which keeps `classify` verbatim and only changes scheduling.
-- [ ] Anonymous usage analytics — platform/OS split, app version, install/usage counts. Nothing wired yet; decisions below, all reversible. Needs an ADR (next: 0022) when picked up.
+- [ ] Anonymous usage analytics — platform/OS split, app version, install/usage counts. Nothing wired yet; decisions below, all reversible. Needs an ADR (next free number in `docs/adr/`) when picked up.
   - **Backend: Aptabase, not Google Analytics.** GA is web-only (needs the Measurement Protocol for desktop) *and* `google-analytics.com` is blocked in Iran — our target audience — so GA would silently undercount exactly the blocked users we most care about. Aptabase is open-source, Tauri-native, privacy-first: no PII, no cookies, no device IDs; it hashes client IP + per-app salt server-side and discards every 24h; GDPR/CCPA/PECR compliant.
   - **Integration:** official `tauri-plugin-aptabase` (`Cargo.toml`) + `@aptabase/tauri` (JS), register `aptabase:allow-track-event` in the ACL. Plugin auto-attaches OS + app version; sends nothing on its own — every event is a manual `trackEvent(name, props)` (props ≤125 chars).
   - **Hosting: Aptabase Cloud (EU) free tier to start.** Risk: the ingestion endpoint may itself be filtered for some Iran users → those events lost (undercount); acceptable for rough metrics.
@@ -35,6 +35,14 @@
 - [ ] Wake detection could replace the `visibilitychange` update-check hack (ADR-0015 / ADR-0029 follow-up) — both exist because the webview's timers freeze during sleep, but they detect it two different ways. `handleWake` in `App.tsx` is the more direct signal; folding `runUpdateCheck` onto it would remove the visibility listener and the `lastCheckRef` bookkeeping.
 - [ ] `WAKE_GRACE_MAX_MS` is a fixed 20s guess at OS network re-establishment time (ADR-0029). A slow VPN reconnect exceeds it and gets the old offline-then-recovered pair. Revisit only if real machines show it.
 
+- [ ] Accessible dialogs + keyboard reordering (audit 2026-09-23) — modals have no focus trap / Escape / `aria-modal`, and dnd-kit reordering is pointer-only (add `KeyboardSensor`).
+- [ ] Restrictive CSP — `tauri.conf.json` has `"csp": null`. Allow self + `google.com/s2/favicons` images.
+- [ ] Per-probe diagnostic reason (DNS / TCP / TLS / HTTP) and probe age on each endpoint, so "Down" says why and how fresh.
+- [ ] WAN "last measured" timestamp next to the IP.
+- [ ] `timeout_ms` bounds check — not user-editable yet, only reachable by hand-edit or import (ADR-0030 follow-up).
+- [ ] TS types generated from the Rust models (`ts-rs` / `specta`) instead of the hand-kept mirror in `src/types.ts`.
+- [ ] Probe redirect policy has no automated test (needs a local TLS server) — `state.rs` `probe_client`.
+- [ ] Bundle id `com.qanary.app` stays. Renaming it orphans every user's config dir unless it ships with a migration and an ADR.
 
 ### Optional features
 - [ ] Status widget (macOS first, then Windows/Linux)

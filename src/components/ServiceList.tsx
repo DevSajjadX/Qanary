@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import type { ListStatus } from "../types";
 import { ServiceRow } from "./ServiceRow";
 import { Icon } from "./Icon";
-import * as api from "../api";
 import type { GripProps } from "../App";
 import {
   DndContext,
@@ -26,7 +25,7 @@ function SortableRow({
   onEdit: () => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: s.id });
-  const sortStyle = { transform: CSS.Transform.toString(transform), transition };
+  const sortStyle = { transform: CSS.Translate.toString(transform), transition };
   return (
     <ServiceRow
       status={s}
@@ -49,6 +48,8 @@ export function ServiceList({
   onEditList,
   onAddService,
   onEditService,
+  onToggleCollapse,
+  onEditOrder,
   // Optional sortable props passed from SortableListItem in App.tsx (list-level drag).
   sortRef,
   sortStyle,
@@ -63,10 +64,14 @@ export function ServiceList({
   onEditList: (listId: string, name: string, icon: string, critical: boolean) => void;
   onAddService: (listId: string, listName: string) => void;
   onEditService: (listId: string, serviceId: string) => void;
+  onToggleCollapse: (listId: string, collapsed: boolean) => void;
+  onEditOrder: () => void;
 } & Partial<GripProps>) {
   const banner = list.all_down;
   const [menuOpen, setMenuOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(list.collapsed);
+  // Read from the snapshot, never copied into local state: a remount (entering/leaving reorder
+  // mode) would reset a copy to a stale value.
+  const collapsed = list.collapsed;
   const [deleteBusy, setDeleteBusy] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -101,9 +106,7 @@ export function ServiceList({
   }
 
   function handleToggleCollapse() {
-    const next = !collapsed;
-    setCollapsed(next);
-    api.setListCollapsed(list.id, next);
+    onToggleCollapse(list.id, !collapsed);
   }
 
   function handleServiceDragEnd(event: DragEndEvent) {
@@ -190,6 +193,15 @@ export function ServiceList({
               <div className="list-dropdown">
                 <button className="list-dropdown-item" onClick={handleEdit}>
                   Edit
+                </button>
+                <button
+                  className="list-dropdown-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onEditOrder();
+                  }}
+                >
+                  Edit order
                 </button>
                 <button
                   className="list-dropdown-item list-dropdown-delete"

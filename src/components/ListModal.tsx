@@ -15,6 +15,7 @@ export function ListModal({
   const [icon, setIcon] = useState(initial.icon);
   const [critical, setCritical] = useState(initial.critical);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
   // Re-seed when the modal opens for a different list.
   useEffect(() => {
@@ -27,11 +28,12 @@ export function ListModal({
     e.preventDefault();
     if (!name.trim()) return;
     setBusy(true);
+    setError("");
     try {
       await onSave(name.trim(), icon.trim(), critical);
       onClose();
     } catch (err) {
-      console.error(err);
+      setError(String(err));
     } finally {
       setBusy(false);
     }
@@ -71,6 +73,7 @@ export function ListModal({
           >
             Critical
           </button>
+          {error && <p className="modal-error">{error}</p>}
           <div className="modal-actions">
             <button type="button" className="modal-cancel" onClick={onClose} disabled={busy}>Cancel</button>
             <button type="submit" className="modal-save" disabled={busy}>

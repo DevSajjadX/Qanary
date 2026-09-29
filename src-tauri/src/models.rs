@@ -138,6 +138,9 @@ pub struct Config {
     /// Probe cadence for **non-critical** lists, in seconds. Default 60.
     #[serde(default = "default_noncritical_interval")]
     pub noncritical_interval_secs: u64,
+    /// TCP-connect timeout per endpoint, in ms. Does **not** bound the HTTPS HEAD that follows,
+    /// which has its own `HTTP_TIMEOUT` (5s, `lib.rs`): folding both into this budget would leave
+    /// the HEAD ~3s and read slow TLS on filtered links as Blocked (audit B01, kept deliberately).
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
     /// Ordered list of HTTPS plain-text IP providers tried in sequence.

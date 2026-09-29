@@ -3,7 +3,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mock notify to prevent Tauri plugin-notification from loading
 vi.mock("./notify", () => ({ notify: vi.fn().mockResolvedValue(undefined) }));
 
-import { buildMessage, effectiveDir, fireAlert, fireBatch, fireCutOffAlert } from "./alerts";
+import {
+  buildMessage,
+  effectiveDir,
+  fireAlert,
+  fireBatch,
+  fireCutOffAlert,
+  reconcilePending,
+} from "./alerts";
 import type { Config } from "../types";
 import { notify } from "./notify";
 
@@ -427,5 +434,28 @@ describe("notify_volume (the gain path)", () => {
     });
     expect(mockNotify).toHaveBeenCalledWith("Outage", "Internet is down.");
     expect(instances).toHaveLength(0);
+  });
+});
+
+describe("reconcilePending", () => {
+  const list = (id: string, name: string, critical: boolean) => ({
+    id, name, icon: "", collapsed: false, critical, services: [],
+  });
+  const pending = new Map([
+    ["gone", { name: "Gone", dir: "down" as const }],
+    ["renamed", { name: "Old name", dir: "down" as const }],
+    ["demoted", { name: "Demoted", dir: "blocked" as const }],
+  ]);
+
+  it("drops deleted and non-critical lists, takes the current name", () => {
+    const out = reconcilePending(pending, [
+      list("renamed", "New name", true),
+      list("demoted", "Demoted", false),
+    ]);
+    expect([...out]).toEqual([["renamed", { name: "New name", dir: "down" }]]);
+  });
+
+  it("keeps everything while no config is loaded", () => {
+    expect(reconcilePending(pending, undefined)).toBe(pending);
   });
 });

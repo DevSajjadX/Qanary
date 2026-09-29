@@ -4,6 +4,11 @@
 - **Date:** 2026-06-17
 - **Deciders:** Esi-Abolfazl
 
+> **Amendment 2026-09-30:** the frontend no longer holds its own collapsed state — superseded in
+> part by [ADR-0031](0031-live-state-has-one-owner.md). `set_list_collapsed` returns the saved
+> config and the backend pushes the new layout; `ServiceList` reads `list.collapsed`. The persisted
+> field and the save-only command stand.
+
 ## Context
 
 Lists needed a remembered open/closed (collapsed) state that survives app restarts — an

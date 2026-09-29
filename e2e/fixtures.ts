@@ -31,6 +31,22 @@ export const SNAPSHOT: Snapshot = {
       collapsed: false,
       critical: false,
     },
+    {
+      id: "intranet",
+      name: "Intranet",
+      icon: "🏠",
+      services: [
+        {
+          id: "s2",
+          label: "Digikala",
+          state: "up",
+          endpoints: [{ id: "e2", host: "digikala.com", state: "up", latency_ms: 30 }],
+        },
+      ],
+      all_down: false,
+      collapsed: false,
+      critical: false,
+    },
   ],
   overall: "green",
   wan: {
@@ -67,6 +83,8 @@ export const CONFIG: Config = {
 type QanaryFixtures = {
   mockedPage: Page;
   getInvokedCmds: () => Promise<string[]>;
+  /** Deliver a backend event (e.g. `service-update`) to the page's listener, as Tauri would. */
+  emitEvent: (event: string, payload: unknown) => Promise<void>;
 };
 
 // --- Fixture implementation ---
@@ -101,17 +119,22 @@ export const test = base.extend<QanaryFixtures>({
           unregisterCallback: (id: number) => callbacks.delete(id),
           runCallback: (id: number, data: unknown) => callbacks.get(id)?.(data),
           callbacks,
-          invoke: async (cmd: string) => {
+          invoke: async (cmd: string, args?: { event?: string; handler?: number }) => {
             (window as unknown as { __INVOKED_CMDS__: string[] }).__INVOKED_CMDS__.push(cmd);
             switch (cmd) {
+              case "plugin:event|listen": {
+                const listeners = (window as unknown as { __LISTENERS__: Record<string, number> })
+                  .__LISTENERS__;
+                listeners[args!.event!] = args!.handler!;
+                return args!.handler;
+              }
               case "get_snapshot": return snap;
               case "get_config": return cfg;
-              case "refresh_now": return snap;
               case "take_new_changelog": return null;
+              case "export_config": return null;
               case "set_list_collapsed":
               case "reorder_lists":
               case "reorder_services":
-              case "export_config": return null;
               case "add_services":
               case "update_service":
               case "remove_service":
@@ -120,7 +143,6 @@ export const test = base.extend<QanaryFixtures>({
               case "remove_list":
               case "reset_config":
               case "update_settings":
-              case "set_hide_dock":
               case "import_config": return cfg;
               default: return null;
             }
@@ -130,6 +152,7 @@ export const test = base.extend<QanaryFixtures>({
           unregisterListener: () => {},
         };
         (window as unknown as { __INVOKED_CMDS__: string[] }).__INVOKED_CMDS__ = [];
+        (window as unknown as { __LISTENERS__: Record<string, number> }).__LISTENERS__ = {};
       },
       { snap, cfg },
     );
@@ -141,6 +164,21 @@ export const test = base.extend<QanaryFixtures>({
     });
 
     await use(page);
+  },
+
+  emitEvent: async ({ mockedPage }, use) => {
+    await use((event, payload) =>
+      mockedPage.evaluate(
+        ({ event, payload }) => {
+          const w = window as unknown as {
+            __LISTENERS__: Record<string, number>;
+            __TAURI_INTERNALS__: { runCallback: (id: number, data: unknown) => void };
+          };
+          w.__TAURI_INTERNALS__.runCallback(w.__LISTENERS__[event], { event, id: 0, payload });
+        },
+        { event, payload },
+      ),
+    );
   },
 
   getInvokedCmds: async ({ mockedPage }, use) => {

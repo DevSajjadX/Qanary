@@ -46,13 +46,13 @@ Two more alerts share those toggles:
 - **Blocked** — a critical list whose every endpoint turns blocked (TCP connects, HTTPS fails: the interception fingerprint) gets a dedicated "Blocked" alert instead of the generic outage one. Own toggles, defaulting on.
 - **You're offline** — when nothing at all is reachable, you get one app-wide offline alert. Uses the outage toggles; it has no setting of its own.
 
-**One alert per check round.** Each service probes on its own schedule, so a single round's changes land a few seconds apart. Qanary waits for the round to go quiet (a little longer than the probe timeout, at most 12s) and then speaks **once**, at the worst thing it found: offline outranks blocked, which outranks a plain outage. Losing your connection therefore gives one "You're offline" alert, not one per list. A list still down when you come back online is announced at that point rather than being dropped, and a later round reaching a worse state alerts again.
+**One alert per check round.** Each service probes on its own schedule, so a single round's changes land a few seconds apart. Qanary waits for the round to go quiet (a little longer than the probe timeout, at most 12s) and then speaks **once**, at the worst thing it found: offline outranks blocked, which outranks a plain outage. Losing your connection therefore gives one "You're offline" alert, not one per list. A list still down when you come back online is announced at that point rather than being dropped, under its current name — unless you deleted it or made it non-critical in the meantime — and a later round reaching a worse state alerts again. After your Mac wakes from sleep, Qanary gives the network up to 20s to come back before deciding anything changed, then reports the difference once.
 
 **Sound volume** — one level for every alert sound, set with the slider under the alert toggles in **Settings** (0–100%). It applies to Qanary's own sounds only; the notification banners themselves are unaffected, so leaving every Sound box off gives you silent banners. The slider is a level, not a fourth switch: **Muted** (0) silences the audio and leaves your Sound checkboxes exactly as they are, so turning the level back up restores them. The slider goes inactive only when no direction is set to make a sound at all.
 
 ## Services
 
-Add or edit services from the modal. Each non-blank line is one service.
+Add services from the modal. Each non-blank line is one service. Editing a service shows its label and endpoints as two separate fields.
 
 - **Custom ports** — `host:port` to probe a specific port instead of 443. Example: `api.example.com:8080`.
 - **Multi-endpoint** — comma-separate hosts on one line. Example: `Mail: smtp.example.com:465, imap.example.com:993`. The row rolls up reachable / blocked / down; expand to see each endpoint and latency.
@@ -60,6 +60,12 @@ Add or edit services from the modal. Each non-blank line is one service.
 - **Label** — prefix with `Label:` to name it (`Search: google.com`). Without a label, the first host becomes the name.
 
 Each service can be edited or removed from its row's `⋯` menu.
+
+A host Qanary can't read (a stray colon, an IPv6 address, port 0) is reported by name and nothing from that line is added.
+
+**Probe timeout** — `timeout_ms` (default 3s) bounds the TCP connect only; the HTTPS check has its own fixed 5s limit.
+
+**Favicons** — service icons are loaded from Google's favicon service (`google.com/s2/favicons`) by hostname. That request tells Google which hosts you monitor, and it fails wherever Google is filtered (the row just shows no icon).
 
 ## Stack
 

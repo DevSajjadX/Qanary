@@ -14,18 +14,17 @@ export interface UpdateInfo {
  * return the next state.
  *
  * - null info → no change (up-to-date, keep whatever phase/version we have)
- * - newer version → reset to "available" (force re-download even if we were ready)
- * - same version → no change (preserves downloading/ready)
+ * - downloading/ready → no change, even for a newer version: the handle on disk is the one that
+ *   installs (update.ts pins it); the newer release is found after relaunch (audit A12)
+ * - newer version → "available"
+ * - same version → no change
  */
 export function nextUpdatePhase(
   current: UpdateState,
   info: UpdateInfo | null,
 ): UpdateState {
   if (!info) return current;
-  if (info.version !== current.version) {
-    // Newer (or first) version seen: reset so the user re-downloads before installing.
-    return { phase: "available", version: info.version };
-  }
-  // Same version — keep current phase (may be downloading or ready).
+  if (current.phase === "downloading" || current.phase === "ready") return current;
+  if (info.version !== current.version) return { phase: "available", version: info.version };
   return current;
 }

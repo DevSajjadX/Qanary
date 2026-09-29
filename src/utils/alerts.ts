@@ -8,7 +8,7 @@
 // `fireBatch` is the single owner of alert precedence — Cut-off > blocked > outage — for one
 // settled Alert batch. App.tsx only collects edges and decides *when* the round is settled.
 
-import type { Config } from "../types";
+import type { Config, ServiceList } from "../types";
 import { notify } from "./notify";
 import downSfx from "../assets/sounds/down.mp3";
 import upSfx from "../assets/sounds/up.mp3";
@@ -149,6 +149,25 @@ export function fireCutOffAlert(config: Config | null): void {
 export interface BatchEntry {
   name: string;
   dir: Dir;
+}
+
+/**
+ * Entries are keyed by list id and captured at the edge; one held behind a cut-off can outlive
+ * edits to its list. Keep only lists that still exist and are still critical, under their current
+ * name (audit A11). `lists` is the config — the snapshot baseline lags a delete/rename until the
+ * next round settles. No config loaded yet → nothing to reconcile against, keep all.
+ */
+export function reconcilePending(
+  pending: Map<string, BatchEntry>,
+  lists: ServiceList[] | undefined,
+): Map<string, BatchEntry> {
+  if (!lists) return pending;
+  const out = new Map<string, BatchEntry>();
+  for (const [id, entry] of pending) {
+    const list = lists.find((l) => l.id === id);
+    if (list?.critical) out.set(id, { ...entry, name: list.name });
+  }
+  return out;
 }
 
 /** Settled-round state the precedence rule needs beyond the entries themselves. */

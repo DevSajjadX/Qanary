@@ -28,11 +28,15 @@ pub const EVENT_STATUS: &str = "status-update";
 /// `all_down` + the new overall Severity). The frontend merges it into its local snapshot.
 pub const EVENT_SERVICE: &str = "service-update";
 
-/// Overall HTTP timeout for HEAD probes and the WAN lookup.
+/// Overall HTTP timeout for HEAD probes and the WAN lookup. Separate from `Config::timeout_ms`,
+/// which only bounds the TCP connect — see that field for why.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Emit a synthetic snapshot with all services in `Checking` state and store it.
 /// Sync (no probing). Used to give instant visual feedback before a background probe resolves.
+///
+/// Every snapshot emit happens while holding the snapshot lock, so events leave in the same order
+/// the snapshot changed — a later state can never be overtaken by an earlier one.
 pub fn emit_checking(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     let cfg = state.config.lock().unwrap().clone();
@@ -47,10 +51,24 @@ pub fn emit_checking(app: &tauri::AppHandle) {
         wan,
         cut_off: false, // checking state is never cut-off — nothing has settled yet
     };
-    *state.snapshot.lock().unwrap() = Some(snapshot.clone());
-    let _ = app.emit(EVENT_STATUS, &snapshot);
+    {
+        let mut guard = state.snapshot.lock().unwrap();
+        let _ = app.emit(EVENT_STATUS, &snapshot);
+        *guard = Some(snapshot);
+    }
     // Checking = busy: show the brand-yellow dot, matching the status button's qbreathe.
     tray::update_checking(app);
+}
+
+/// Apply the config's presentation (order, collapse, name, icon, criticality) to the live snapshot
+/// and push it, keeping every probe status. Used by reorder/collapse, which don't re-probe.
+pub fn emit_layout(app: &tauri::AppHandle, cfg: &models::Config) {
+    let state = app.state::<AppState>();
+    let mut guard = state.snapshot.lock().unwrap();
+    if let Some(snap) = guard.as_mut() {
+        probe::sync_layout(snap, cfg);
+        let _ = app.emit(EVENT_STATUS, &*snap);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -74,7 +92,7 @@ pub fn run() {
                 .app_config_dir()
                 .expect("resolve app config dir")
                 .join("config.json");
-            let config = store::load(&config_path);
+            let (config, load_warning) = store::load(&config_path);
 
             // Persist on first run so the seeded config.json exists and is hand-editable.
             if !config_path.exists() {
@@ -83,15 +101,20 @@ pub fn run() {
                 }
             }
 
-            let client = reqwest::Client::builder()
-                .timeout(HTTP_TIMEOUT)
-                .user_agent(concat!("Qanary/", env!("CARGO_PKG_VERSION")))
-                // No idle keep-alive: every probe HEAD / WAN GET opens a fresh connection over
-                // the *current* route, so a post-VPN/network-change request can't reuse a socket
-                // still bound to the old interface (ADR-0025).
-                .pool_max_idle_per_host(0)
+            // No idle keep-alive: every probe HEAD / WAN GET opens a fresh connection over the
+            // *current* route, so a post-VPN/network-change request can't reuse a socket still
+            // bound to the old interface (ADR-0025).
+            let http = || {
+                reqwest::Client::builder()
+                    .timeout(HTTP_TIMEOUT)
+                    .user_agent(concat!("Qanary/", env!("CARGO_PKG_VERSION")))
+                    .pool_max_idle_per_host(0)
+            };
+            let probe_client = http()
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .expect("build HTTP client");
+                .expect("build probe HTTP client");
+            let wan_client = http().build().expect("build WAN HTTP client");
 
             // Snapshot the flags we need before moving `config` into the managed state.
             let hide_dock = config.hide_dock;
@@ -103,18 +126,21 @@ pub fn run() {
             app.manage(AppState {
                 config: Mutex::new(config),
                 config_path,
-                client,
+                probe_client,
+                wan_client,
                 snapshot: Mutex::new(None),
                 wan: Mutex::new(None),
                 probe_sem: std::sync::Arc::new(tokio::sync::Semaphore::new(probe::MAX_CONCURRENT)),
                 probe_now,
                 tasks: Mutex::new(Vec::new()),
+                generation: std::sync::atomic::AtomicU64::new(0),
+                wan_now: tokio::sync::Notify::new(),
+                load_warning: Mutex::new(load_warning),
             });
 
             // macOS only: suppress the Dock icon when the user opted into tray-only mode.
-            #[cfg(target_os = "macos")]
             if hide_dock {
-                let _ = app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory);
+                commands::apply_dock_policy(app.handle(), true);
             }
 
             // Autostart launches with --hidden: keep the window hidden (tray-only start).
@@ -127,12 +153,9 @@ pub fn run() {
             // Build the tray icon before emit_checking so update_icon finds the handle.
             tray::build_tray(app.handle())?;
 
-            // Emit a checking snapshot immediately so the UI shows lists on first paint
-            // instead of the "Starting first probe…" placeholder. Seeds AppState.snapshot, which
-            // the Service probe tasks then fill in via deltas.
-            emit_checking(app.handle());
-
-            // Spawn one Service probe task per enabled Service, plus the WAN task.
+            // Paint a checking snapshot (so the UI shows lists on first paint instead of the
+            // "Starting first probe…" placeholder) and spawn one Service probe task per enabled
+            // Service — `respawn_tasks` does both, in the order that makes stale results impossible.
             scheduler::respawn_tasks(app.handle());
             scheduler::spawn_wan_task(app.handle());
 
@@ -164,11 +187,11 @@ pub fn run() {
             commands::set_list_collapsed,
             commands::reorder_lists,
             commands::reorder_services,
-            commands::set_hide_dock,
             commands::take_new_changelog,
             commands::get_changelog,
             commands::export_config,
             commands::import_config,
+            commands::take_load_warning,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -14,7 +14,7 @@
 //! from the real site by this method; it will read as `Up`.
 
 use crate::models::{
-    Config, EndpointStatus, ListStatus, Service, ServiceState, ServiceStatus, Severity,
+    Config, EndpointStatus, ListStatus, Service, ServiceState, ServiceStatus, Severity, Snapshot,
     worst_state,
 };
 use std::sync::Arc;
@@ -209,6 +209,24 @@ pub fn checking_lists(config: &Config) -> Vec<ListStatus> {
         .collect()
 }
 
+/// Make the live snapshot's presentation match the config — list and service order, plus each
+/// list's `collapsed`/`name`/`icon`/`critical` — without touching any probe status. The backend
+/// owns layout in the snapshot too, so a later full `status-update` can't revert a reorder or a
+/// collapse the frontend only painted locally (audit A05).
+pub fn sync_layout(snap: &mut Snapshot, cfg: &Config) {
+    snap.lists
+        .sort_by_key(|l| cfg.lists.iter().position(|c| c.id == l.id).unwrap_or(usize::MAX));
+    for list in snap.lists.iter_mut() {
+        let Some(c) = cfg.lists.iter().find(|c| c.id == list.id) else { continue };
+        list.name = c.name.clone();
+        list.icon = c.icon.clone();
+        list.collapsed = c.collapsed;
+        list.critical = c.critical;
+        list.services
+            .sort_by_key(|s| c.services.iter().position(|x| x.id == s.id).unwrap_or(usize::MAX));
+    }
+}
+
 /// Probe one Service: fan its endpoints out under the shared semaphore, then roll up
 /// worst-wins into a `ServiceStatus`. The caller is responsible for skipping disabled
 /// services — this always probes whatever it's handed.
@@ -380,6 +398,34 @@ mod tests {
         assert!(list_status(&[&[Down, Blocked], &[Down]]).all_down);
         // Checking endpoint prevents fully_failing
         assert!(!list_status(&[&[Checking, Down]]).all_down);
+    }
+
+    /// Reorder + collapse reach the live snapshot, and probe statuses ride along untouched.
+    #[test]
+    fn sync_layout_applies_order_and_collapse_keeping_status() {
+        let mut cfg = Config::default();
+        let mut snap = Snapshot {
+            lists: checking_lists(&cfg),
+            overall: Severity::Green,
+            wan: None,
+            cut_off: false,
+            settled: false,
+        };
+        let marked = snap.lists[0].services[0].id.clone();
+        snap.lists[0].services[0].state = ServiceState::Up;
+
+        cfg.lists.reverse();
+        let last = cfg.lists.len() - 1;
+        cfg.lists[last].services.reverse(); // the list that was first
+        cfg.lists[0].collapsed = true;
+        sync_layout(&mut snap, &cfg);
+
+        let ids = |l: &[ListStatus]| l.iter().map(|x| x.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&snap.lists), cfg.lists.iter().map(|x| x.id.clone()).collect::<Vec<_>>());
+        assert!(snap.lists[0].collapsed);
+        let moved = &snap.lists[last].services;
+        assert_eq!(moved.last().unwrap().id, marked, "service order follows config");
+        assert_eq!(moved.last().unwrap().state, ServiceState::Up, "status kept");
     }
 
     #[test]

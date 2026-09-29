@@ -1,8 +1,10 @@
 //! Tauri commands — the bridge the React frontend calls via `invoke(...)`.
 //!
-//! Read commands just clone state out. Mutation commands change the config, persist it, return the
-//! updated config immediately, and kick off a fresh probe cycle in the background (so the UI also
-//! gets a `status-update` event without the command having to wait for every probe to finish).
+//! Read commands just clone state out. Every config write goes through `commit` (apply to a copy,
+//! save it under the config lock, only then swap it in) and returns `Err(message)` when that fails,
+//! so the UI never shows a change that isn't on disk. Probe-affecting writes use `mutate`, which
+//! also kicks off a fresh probe cycle in the background. Input is validated where it enters
+//! (`to_endpoints`); a whole config is validated only on import.
 
 use crate::models::{Config, Endpoint, Service, ServiceList, Snapshot};
 use crate::state::AppState;
@@ -37,36 +39,52 @@ pub fn get_config(state: State<AppState>) -> Config {
 }
 
 /// Probe everything right now: paint Checking, fire the "probe now" broadcast so every Service
-/// probe task (and the WAN task) wakes immediately, and return the current (checking) snapshot.
-/// Deltas then stream in as each probe lands.
+/// probe task (and the WAN task) wakes immediately. The Checking snapshot and every delta after it
+/// arrive as events, so nothing is returned.
 #[tauri::command]
-pub fn refresh_now(app: AppHandle) -> Snapshot {
-    crate::emit_checking(&app); // seeds AppState.snapshot with a Checking snapshot
-    let state = app.state::<AppState>();
-    let _ = state.probe_now.send(()); // Err just means no subscribers yet — harmless
-    let snapshot = state.snapshot.lock().unwrap().clone();
-    snapshot.expect("emit_checking just set the snapshot")
+pub fn refresh_now(app: AppHandle) {
+    crate::emit_checking(&app);
+    let _ = app.state::<AppState>().probe_now.send(()); // Err just means no subscribers yet — harmless
 }
 
 /// Add one or more services (each with their endpoints) to a list.
 /// Replaces the old single-host `add_service` command.
 #[tauri::command]
-pub fn add_services(app: AppHandle, list_id: String, services: Vec<ServiceDraft>) -> Config {
+pub fn add_services(
+    app: AppHandle,
+    list_id: String,
+    services: Vec<ServiceDraft>,
+) -> Result<Config, String> {
     mutate(&app, |cfg| {
-        if let Some(list) = cfg.lists.iter_mut().find(|l| l.id == list_id) {
-            for draft in &services {
-                let endpoints: Vec<Endpoint> = draft
-                    .endpoints
-                    .iter()
-                    .filter(|e| !e.host.trim().is_empty())
-                    .map(|e| Endpoint::new(e.host.trim(), e.port.unwrap_or(443)))
-                    .collect();
-                if !endpoints.is_empty() {
-                    list.services.push(Service::with_endpoints(&draft.label, endpoints));
-                }
-            }
+        let list = find_list(cfg, &list_id)?;
+        for draft in &services {
+            list.services.push(Service::with_endpoints(&draft.label, to_endpoints(&draft.endpoints)?));
         }
+        Ok(())
     })
+}
+
+/// Turn drafts into validated endpoints. An empty result is an error: a service must be probeable.
+fn to_endpoints(drafts: &[EndpointDraft]) -> Result<Vec<Endpoint>, String> {
+    let endpoints = drafts
+        .iter()
+        .filter(|e| !e.host.trim().is_empty())
+        .map(|e| {
+            let (host, port) = (e.host.trim(), e.port.unwrap_or(443));
+            crate::store::validate_endpoint(host, port).map(|()| Endpoint::new(host, port))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if endpoints.is_empty() {
+        return Err("Enter at least one host.".into());
+    }
+    Ok(endpoints)
+}
+
+fn find_list<'a>(cfg: &'a mut Config, list_id: &str) -> Result<&'a mut ServiceList, String> {
+    cfg.lists
+        .iter_mut()
+        .find(|l| l.id == list_id)
+        .ok_or_else(|| "That list no longer exists.".to_string())
 }
 
 /// Replace a service's label and endpoints (wholesale edit).
@@ -77,132 +95,145 @@ pub fn update_service(
     service_id: String,
     label: String,
     endpoints: Vec<EndpointDraft>,
-) -> Config {
+) -> Result<Config, String> {
     mutate(&app, |cfg| {
-        if let Some(list) = cfg.lists.iter_mut().find(|l| l.id == list_id) {
-            if let Some(svc) = list.services.iter_mut().find(|s| s.id == service_id) {
-                svc.label = label.clone();
-                svc.endpoints = endpoints
-                    .iter()
-                    .filter(|e| !e.host.trim().is_empty())
-                    .map(|e| Endpoint::new(e.host.trim(), e.port.unwrap_or(443)))
-                    .collect();
-            }
-        }
+        let svc = find_list(cfg, &list_id)?
+            .services
+            .iter_mut()
+            .find(|s| s.id == service_id)
+            .ok_or("That service no longer exists.")?;
+        svc.label = label;
+        svc.endpoints = to_endpoints(&endpoints)?;
+        Ok(())
     })
 }
 
 #[tauri::command]
-pub fn remove_service(app: AppHandle, list_id: String, service_id: String) -> Config {
+pub fn remove_service(app: AppHandle, list_id: String, service_id: String) -> Result<Config, String> {
     mutate(&app, |cfg| {
-        if let Some(list) = cfg.lists.iter_mut().find(|l| l.id == list_id) {
-            list.services.retain(|s| s.id != service_id);
-        }
+        find_list(cfg, &list_id)?.services.retain(|s| s.id != service_id);
+        Ok(())
     })
 }
 
 #[tauri::command]
-pub fn add_list(app: AppHandle, name: String, icon: String, critical: bool) -> Config {
+pub fn add_list(app: AppHandle, name: String, icon: String, critical: bool) -> Result<Config, String> {
     mutate(&app, |cfg| {
         let mut list = ServiceList::new(&name, &icon, Vec::new());
         list.critical = critical;
         cfg.lists.push(list);
+        Ok(())
     })
 }
 
 /// Update an existing list's display name, icon, and critical flag.
 #[tauri::command]
-pub fn update_list(app: AppHandle, list_id: String, name: String, icon: String, critical: bool) -> Config {
+pub fn update_list(
+    app: AppHandle,
+    list_id: String,
+    name: String,
+    icon: String,
+    critical: bool,
+) -> Result<Config, String> {
     mutate(&app, |cfg| {
-        if let Some(list) = cfg.lists.iter_mut().find(|l| l.id == list_id) {
-            list.name = name.clone();
-            list.icon = icon.clone();
-            list.critical = critical;
-        }
+        let list = find_list(cfg, &list_id)?;
+        list.name = name;
+        list.icon = icon;
+        list.critical = critical;
+        Ok(())
     })
 }
 
 /// Wipe the persisted config, seed fresh defaults, re-probe.
 #[tauri::command]
-pub fn reset_config(app: AppHandle) -> Config {
-    let state = app.state::<AppState>();
-    let defaults = Config::default();
-    *state.config.lock().unwrap() = defaults.clone();
-    if let Err(err) = crate::store::save(&state.config_path, &defaults) {
-        eprintln!("qanary: failed to save reset config: {err}");
-    }
-    crate::emit_checking(&app);
-    crate::scheduler::respawn_tasks(&app);
-    defaults
+pub fn reset_config(app: AppHandle) -> Result<Config, String> {
+    let cfg = mutate(&app, |cfg| {
+        *cfg = Config::default();
+        Ok(())
+    })?;
+    apply_dock_policy(&app, cfg.hide_dock);
+    Ok(cfg)
 }
 
 #[tauri::command]
-pub fn remove_list(app: AppHandle, list_id: String) -> Config {
+pub fn remove_list(app: AppHandle, list_id: String) -> Result<Config, String> {
     mutate(&app, |cfg| {
         cfg.lists.retain(|l| l.id != list_id);
+        Ok(())
     })
 }
 
+/// The Settings form's Save, as one write. Every field is optional: `None` = leave unchanged.
+/// `hide_dock` is part of it so Dock + the rest either both save or neither does.
+#[derive(Debug, Default, Deserialize)]
+pub struct SettingsPatch {
+    pub critical_interval_secs: Option<u64>,
+    pub noncritical_interval_secs: Option<u64>,
+    pub timeout_ms: Option<u64>,
+    pub ip_providers: Option<Vec<String>>,
+    pub down_notify: Option<bool>,
+    pub down_sound: Option<bool>,
+    pub up_notify: Option<bool>,
+    pub up_sound: Option<bool>,
+    pub blocked_notify: Option<bool>,
+    pub blocked_sound: Option<bool>,
+    pub notify_volume: Option<u8>,
+    pub hide_dock: Option<bool>,
+}
+
 #[tauri::command]
-pub fn update_settings(
-    app: AppHandle,
-    critical_interval_secs: Option<u64>,
-    noncritical_interval_secs: Option<u64>,
-    timeout_ms: Option<u64>,
-    ip_providers: Option<Vec<String>>,
-    down_notify: Option<bool>,
-    down_sound: Option<bool>,
-    up_notify: Option<bool>,
-    up_sound: Option<bool>,
-    blocked_notify: Option<bool>,
-    blocked_sound: Option<bool>,
-    notify_volume: Option<u8>,
-) -> Config {
-    mutate(&app, |cfg| {
-        if let Some(v) = critical_interval_secs {
-            cfg.critical_interval_secs = v.max(10); // floor to avoid hammering the network
+pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<Config, String> {
+    let hide_dock = patch.hide_dock;
+    let cfg = mutate(&app, |cfg| {
+        apply_settings(cfg, patch);
+        Ok(())
+    })?;
+    if hide_dock.is_some() {
+        apply_dock_policy(&app, cfg.hide_dock);
+    }
+    Ok(cfg)
+}
+
+fn apply_settings(cfg: &mut Config, p: SettingsPatch) {
+    if let Some(v) = p.critical_interval_secs {
+        cfg.critical_interval_secs = v.max(10); // floor to avoid hammering the network
+    }
+    if let Some(v) = p.noncritical_interval_secs {
+        cfg.noncritical_interval_secs = v.max(10);
+    }
+    if let Some(v) = p.timeout_ms {
+        cfg.timeout_ms = v;
+    }
+    if let Some(v) = p.ip_providers {
+        let providers: Vec<String> = v
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !providers.is_empty() {
+            cfg.ip_providers = providers;
         }
-        if let Some(v) = noncritical_interval_secs {
-            cfg.noncritical_interval_secs = v.max(10);
+    }
+    let flags = [
+        (p.down_notify, &mut cfg.down_notify),
+        (p.down_sound, &mut cfg.down_sound),
+        (p.up_notify, &mut cfg.up_notify),
+        (p.up_sound, &mut cfg.up_sound),
+        (p.blocked_notify, &mut cfg.blocked_notify),
+        (p.blocked_sound, &mut cfg.blocked_sound),
+        (p.hide_dock, &mut cfg.hide_dock),
+    ];
+    for (new, field) in flags {
+        if let Some(v) = new {
+            *field = v;
         }
-        if let Some(v) = timeout_ms {
-            cfg.timeout_ms = v;
-        }
-        if let Some(v) = ip_providers {
-            let providers: Vec<String> = v
-                .into_iter()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if !providers.is_empty() {
-                cfg.ip_providers = providers;
-            }
-        }
-        if let Some(v) = down_notify {
-            cfg.down_notify = v;
-        }
-        if let Some(v) = down_sound {
-            cfg.down_sound = v;
-        }
-        if let Some(v) = up_notify {
-            cfg.up_notify = v;
-        }
-        if let Some(v) = up_sound {
-            cfg.up_sound = v;
-        }
-        if let Some(v) = blocked_notify {
-            cfg.blocked_notify = v;
-        }
-        if let Some(v) = blocked_sound {
-            cfg.blocked_sound = v;
-        }
-        if let Some(v) = notify_volume {
-            cfg.notify_volume = v;
-        }
-        // After the assignments, so an out-of-range `notify_volume` from this payload is clamped
-        // rather than persisted as-is.
-        crate::store::normalize_alerts(cfg);
-    })
+    }
+    if let Some(v) = p.notify_volume {
+        cfg.notify_volume = v;
+    }
+    // After the assignments, so an out-of-range `notify_volume` from this payload is clamped
+    // rather than persisted as-is.
+    crate::store::normalize_alerts(cfg);
 }
 
 /// Release notes for the modal: the CHANGELOG section plus the version it belongs to.
@@ -278,20 +309,15 @@ fn entries_since(all: Vec<ChangelogPayload>, last: &str) -> Vec<ChangelogPayload
 #[tauri::command]
 pub fn take_new_changelog(app: AppHandle) -> Vec<ChangelogPayload> {
     let running = app.package_info().version.to_string();
-    let state = app.state::<AppState>();
-
-    let last_seen = {
-        let mut cfg = state.config.lock().unwrap();
-        if cfg.last_changelog_version.as_deref() == Some(running.as_str()) {
-            return Vec::new(); // already shown for this version
-        }
-        let prev = cfg.last_changelog_version.clone();
-        cfg.last_changelog_version = Some(running.clone());
-        prev
-    };
-    // Persist the new last-seen version.
-    let to_save = state.config.lock().unwrap().clone();
-    if let Err(err) = crate::store::save(&state.config_path, &to_save) {
+    let last_seen = app.state::<AppState>().config.lock().unwrap().last_changelog_version.clone();
+    if last_seen.as_deref() == Some(running.as_str()) {
+        return Vec::new(); // already shown for this version
+    }
+    // Not fatal: at worst the notes show again next launch.
+    if let Err(err) = commit(&app, |cfg| {
+        cfg.last_changelog_version = Some(running);
+        Ok(())
+    }) {
         eprintln!("qanary: failed to save last_changelog_version: {err}");
     }
 
@@ -454,93 +480,64 @@ mod changelog_tests {
     }
 }
 
-/// Toggle the macOS Dock icon. Persists the new value and applies it live.
-/// On non-macOS this is a no-op at the OS level but still persists the flag.
-#[tauri::command]
-pub fn set_hide_dock(app: AppHandle, enabled: bool) -> Config {
-    let state = app.state::<AppState>();
-    let updated = {
-        let mut cfg = state.config.lock().unwrap();
-        cfg.hide_dock = enabled;
-        cfg.clone()
-    };
-    if let Err(err) = crate::store::save(&state.config_path, &updated) {
-        eprintln!("qanary: failed to save hide_dock: {err}");
-    }
-    // Apply live on macOS — menu-bar-only (Accessory) vs normal app (Regular).
+/// Apply `hide_dock` live on macOS — menu-bar-only (Accessory) vs normal app (Regular). Called by
+/// every path that can change the flag (settings, import, reset, startup), so the OS state can't
+/// drift. A no-op elsewhere; the flag still persists.
+pub fn apply_dock_policy(app: &AppHandle, hide: bool) {
     #[cfg(target_os = "macos")]
     {
-        let policy = if enabled {
+        let policy = if hide {
             tauri::ActivationPolicy::Accessory
         } else {
             tauri::ActivationPolicy::Regular
         };
         let _ = app.set_activation_policy(policy);
     }
-    updated
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, hide);
 }
 
 /// Reorder the top-level lists by id without triggering a network re-probe.
 /// Reordering is pure UI state — mirrors `set_list_collapsed` (save-only, no `mutate`).
 /// Unknown ids sink to the end of the Vec; nothing is ever silently dropped.
 #[tauri::command]
-pub fn reorder_lists(app: AppHandle, ordered_ids: Vec<String>) -> Config {
-    let state = app.state::<AppState>();
-    let updated = {
-        let mut cfg = state.config.lock().unwrap();
-        cfg.lists.sort_by_key(|x| {
-            ordered_ids
-                .iter()
-                .position(|id| id == &x.id)
-                .unwrap_or(usize::MAX)
-        });
-        cfg.clone()
-    };
-    if let Err(err) = crate::store::save(&state.config_path, &updated) {
-        eprintln!("qanary: failed to save list order: {err}");
-    }
-    updated
+pub fn reorder_lists(app: AppHandle, ordered_ids: Vec<String>) -> Result<Config, String> {
+    let cfg = commit(&app, |cfg| {
+        cfg.lists.sort_by_key(|x| ordered_ids.iter().position(|id| id == &x.id).unwrap_or(usize::MAX));
+        Ok(())
+    })?;
+    crate::emit_layout(&app, &cfg);
+    Ok(cfg)
 }
 
 /// Reorder services within a list by id without triggering a network re-probe.
 /// Same save-only pattern as `reorder_lists` — no `mutate`, no background re-probe.
 #[tauri::command]
-pub fn reorder_services(app: AppHandle, list_id: String, ordered_ids: Vec<String>) -> Config {
-    let state = app.state::<AppState>();
-    let updated = {
-        let mut cfg = state.config.lock().unwrap();
-        if let Some(list) = cfg.lists.iter_mut().find(|l| l.id == list_id) {
-            list.services.sort_by_key(|x| {
-                ordered_ids
-                    .iter()
-                    .position(|id| id == &x.id)
-                    .unwrap_or(usize::MAX)
-            });
-        }
-        cfg.clone()
-    };
-    if let Err(err) = crate::store::save(&state.config_path, &updated) {
-        eprintln!("qanary: failed to save service order: {err}");
-    }
-    updated
+pub fn reorder_services(
+    app: AppHandle,
+    list_id: String,
+    ordered_ids: Vec<String>,
+) -> Result<Config, String> {
+    let cfg = commit(&app, |cfg| {
+        find_list(cfg, &list_id)?
+            .services
+            .sort_by_key(|x| ordered_ids.iter().position(|id| id == &x.id).unwrap_or(usize::MAX));
+        Ok(())
+    })?;
+    crate::emit_layout(&app, &cfg);
+    Ok(cfg)
 }
 
 /// Persist the collapsed/expanded state of a list without triggering a network re-probe.
 /// Collapse is a pure UI concern — firing a full probe on every chevron click would be wasteful.
 #[tauri::command]
-pub fn set_list_collapsed(app: AppHandle, list_id: String, collapsed: bool) -> Config {
-    let state = app.state::<AppState>();
-    let updated = {
-        let mut cfg = state.config.lock().unwrap();
-        if let Some(list) = cfg.lists.iter_mut().find(|l| l.id == list_id) {
-            list.collapsed = collapsed;
-        }
-        cfg.clone()
-    };
-    if let Err(err) = crate::store::save(&state.config_path, &updated) {
-        eprintln!("qanary: failed to save collapsed state: {err}");
-    }
-    updated
+pub fn set_list_collapsed(app: AppHandle, list_id: String, collapsed: bool) -> Result<Config, String> {
+    let cfg = commit(&app, |cfg| {
+        find_list(cfg, &list_id)?.collapsed = collapsed;
+        Ok(())
+    })?;
+    crate::emit_layout(&app, &cfg);
+    Ok(cfg)
 }
 
 /// Write the current live config to a user-picked file path.
@@ -554,51 +551,159 @@ pub fn export_config(state: State<AppState>, path: String) -> Result<(), String>
 
 /// Load a config from a user-picked file path, migrate it if needed, and replace the live config.
 ///
-/// Rejects files whose `schema_version` is newer than `CURRENT_SCHEMA` (made by a newer app).
-/// On success: saves to the real config path, emits checking, respawns tasks, returns the config.
-/// Mirrors `reset_config` — validates and migrates BEFORE swapping state (unlike `mutate`).
+/// Rejects files whose `schema_version` is newer than `CURRENT_SCHEMA` (made by a newer app) and
+/// files that fail `store::validate`. Nothing live changes unless the whole import succeeds.
 #[tauri::command]
 pub fn import_config(app: AppHandle, path: String) -> Result<Config, String> {
     let json = std::fs::read_to_string(&path)
         .map_err(|e| format!("Cannot read file: {e}"))?;
-    let mut cfg: Config = serde_json::from_str(&json)
+    let mut imported: Config = serde_json::from_str(&json)
         .map_err(|e| format!("Invalid config file: {e}"))?;
 
-    if cfg.schema_version > crate::models::CURRENT_SCHEMA {
+    if imported.schema_version > crate::models::CURRENT_SCHEMA {
         return Err(format!(
             "This config was made by a newer version of Qanary (schema {}). Please update the app first.",
-            cfg.schema_version
+            imported.schema_version
         ));
     }
 
-    crate::store::migrate(&mut cfg);
-    crate::store::normalize_alerts(&mut cfg);
+    crate::store::migrate(&mut imported);
+    crate::store::normalize_alerts(&mut imported);
+    crate::store::repair_legacy_hosts(&mut imported); // exports from before 0.6.5
+    crate::store::validate(&imported).map_err(|e| format!("Invalid config file: {e}"))?;
 
-    let state = app.state::<AppState>();
-    *state.config.lock().unwrap() = cfg.clone();
-    if let Err(e) = crate::store::save(&state.config_path, &cfg) {
-        eprintln!("qanary: failed to save imported config: {e}");
-    }
-    crate::emit_checking(&app);
-    crate::scheduler::respawn_tasks(&app);
+    let cfg = mutate(&app, |cfg| {
+        *cfg = imported;
+        Ok(())
+    })?;
+    apply_dock_policy(&app, cfg.hide_dock);
     Ok(cfg)
 }
 
-/// Apply `f` to the config under lock, persist the result, trigger a background re-probe, and
-/// return the updated config. Centralises the save + re-probe that every mutation needs.
-fn mutate<F: FnOnce(&mut Config)>(app: &AppHandle, f: F) -> Config {
+/// The one-time warning from startup when `config.json` couldn't be used and was moved aside
+/// (see `store::load`). Returns it once, then `None`.
+#[tauri::command]
+pub fn take_load_warning(state: State<AppState>) -> Option<String> {
+    state.load_warning.lock().unwrap().take()
+}
+
+/// The single write path for the config. Applies `f` to a copy, saves the copy **while holding the
+/// config lock** (so two quick writes reach disk in the same order they reach memory), and only
+/// then swaps it in. On any error the live config and the file are both unchanged.
+fn commit<F>(app: &AppHandle, f: F) -> Result<Config, String>
+where
+    F: FnOnce(&mut Config) -> Result<(), String>,
+{
     let state = app.state::<AppState>();
-    let updated = {
-        let mut cfg = state.config.lock().unwrap();
-        f(&mut cfg);
-        cfg.clone()
-    };
-    if let Err(err) = crate::store::save(&state.config_path, &updated) {
-        eprintln!("qanary: failed to save config: {err}");
+    commit_to(&state.config, &state.config_path, f)
+}
+
+fn commit_to<F>(config: &std::sync::Mutex<Config>, path: &std::path::Path, f: F) -> Result<Config, String>
+where
+    F: FnOnce(&mut Config) -> Result<(), String>,
+{
+    let mut live = config.lock().unwrap();
+    let mut next = live.clone();
+    f(&mut next)?;
+    crate::store::save(path, &next).map_err(|e| format!("Couldn't save your settings: {e}"))?;
+    *live = next.clone();
+    Ok(next)
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::{apply_settings, SettingsPatch};
+    use crate::models::Config;
+
+    /// Omitted fields stay; given ones apply, Dock included; floors and clamps still run.
+    #[test]
+    fn patch_applies_only_given_fields() {
+        let mut cfg = Config::default();
+        let before = cfg.up_notify;
+        apply_settings(
+            &mut cfg,
+            SettingsPatch {
+                hide_dock: Some(true),
+                critical_interval_secs: Some(3),
+                notify_volume: Some(200),
+                ..Default::default()
+            },
+        );
+        assert!(cfg.hide_dock);
+        assert_eq!(cfg.critical_interval_secs, 10, "floored");
+        assert_eq!(cfg.notify_volume, 100, "clamped");
+        assert_eq!(cfg.up_notify, before, "untouched");
     }
-    // Show affected services as Checking instantly, then respawn the Service probe tasks against
-    // the new config (the Service set may have changed).
-    crate::emit_checking(app);
-    crate::scheduler::respawn_tasks(app);
-    updated
+
+    /// The frontend sends the patch with Config's snake_case field names.
+    #[test]
+    fn patch_deserializes_from_frontend_shape() {
+        let p: SettingsPatch =
+            serde_json::from_str(r#"{"hide_dock":true,"ip_providers":["a.com"]}"#).unwrap();
+        assert_eq!(p.hide_dock, Some(true));
+        assert_eq!(p.ip_providers.unwrap(), vec!["a.com"]);
+        assert!(p.down_sound.is_none());
+    }
+}
+
+#[cfg(test)]
+mod commit_tests {
+    use super::commit_to;
+    use crate::models::Config;
+    use std::sync::Mutex;
+
+    /// A save that fails leaves memory untouched and reports the error (A03): the UI must never
+    /// show a change that isn't on disk.
+    #[test]
+    fn failed_save_keeps_memory_unchanged() {
+        let dir = std::env::temp_dir().join(format!("qanary-commit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("not-a-dir");
+        std::fs::write(&blocker, "").unwrap(); // a file where the config dir should be
+        let live = Mutex::new(Config::default());
+        let before = live.lock().unwrap().lists.len();
+
+        let res = commit_to(&live, &blocker.join("config.json"), |cfg| {
+            cfg.lists.clear();
+            Ok(())
+        });
+
+        assert!(res.unwrap_err().starts_with("Couldn't save"));
+        assert_eq!(live.lock().unwrap().lists.len(), before);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A rejected edit (validation error from `f`) writes nothing and changes nothing.
+    #[test]
+    fn rejected_edit_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!("qanary-commit-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("config.json");
+        let live = Mutex::new(Config::default());
+
+        let res = commit_to(&live, &path, |cfg| {
+            cfg.lists.clear();
+            Err("nope".into())
+        });
+
+        assert_eq!(res.unwrap_err(), "nope");
+        assert!(!path.exists());
+        assert!(!live.lock().unwrap().lists.is_empty());
+    }
+}
+
+/// `commit`, then show affected services as Checking instantly and respawn the Service probe tasks
+/// against the new config (the Service set may have changed); refetch WAN if providers changed.
+fn mutate<F>(app: &AppHandle, f: F) -> Result<Config, String>
+where
+    F: FnOnce(&mut Config) -> Result<(), String>,
+{
+    let state = app.state::<AppState>();
+    let providers_before = state.config.lock().unwrap().ip_providers.clone();
+    let updated = commit(app, f)?;
+    crate::scheduler::respawn_tasks(app); // paints Checking, then re-probes
+    // One place for every path that can change providers (settings, import, reset).
+    if updated.ip_providers != providers_before {
+        state.wan_now.notify_one();
+    }
+    Ok(updated)
 }

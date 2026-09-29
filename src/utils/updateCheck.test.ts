@@ -12,10 +12,18 @@ describe("nextUpdatePhase", () => {
     expect(nextUpdatePhase(none(), null)).toEqual(none());
   });
 
-  it("newer version → reset to available (forces re-download)", () => {
-    // Even if we were already ready to install, a newer version resets the flow.
-    expect(nextUpdatePhase(ready("1.0.1"), { version: "1.0.2" })).toEqual(available("1.0.2"));
+  it("newer version → available", () => {
     expect(nextUpdatePhase(none(), { version: "1.0.1" })).toEqual(available("1.0.1"));
+    expect(nextUpdatePhase(available("1.0.1"), { version: "1.0.2" })).toEqual(available("1.0.2"));
+  });
+
+  // A12: the old rule reset `ready` to `available` for the newer version while update.ts still
+  // held the downloaded handle, so "Update" re-downloaded or installed the wrong one.
+  it("newer version while downloading or ready → no change (install what's on disk)", () => {
+    expect(nextUpdatePhase(ready("1.0.1"), { version: "1.0.2" })).toEqual(ready("1.0.1"));
+    expect(nextUpdatePhase(downloading("1.0.1"), { version: "1.0.2" })).toEqual(
+      downloading("1.0.1"),
+    );
   });
 
   it("same version while downloading → no change (let it finish)", () => {

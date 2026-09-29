@@ -8,8 +8,8 @@ import type { Config, ServiceDelta, ServiceDraft, Snapshot } from "./types";
 export const getSnapshot = () => invoke<Snapshot | null>("get_snapshot");
 export const getConfig = () => invoke<Config>("get_config");
 
-/** Probe everything immediately and return the fresh snapshot. */
-export const refreshNow = () => invoke<Snapshot>("refresh_now");
+/** Probe everything immediately; results arrive as `status-update` / `service-update` events. */
+export const refreshNow = () => invoke<void>("refresh_now");
 
 /** Add one or more services (each with endpoints) to a list. */
 export const addServices = (listId: string, services: ServiceDraft[]) =>
@@ -45,7 +45,10 @@ export const importConfig = (path: string) =>
   invoke<Config>("import_config", { path });
 
 export const setListCollapsed = (listId: string, collapsed: boolean) =>
-  invoke<void>("set_list_collapsed", { listId, collapsed });
+  invoke<Config>("set_list_collapsed", { listId, collapsed });
+
+/** Startup warning when config.json was unusable and moved aside. Returned once, then null. */
+export const takeLoadWarning = () => invoke<string | null>("take_load_warning");
 
 /** Reorder top-level lists by id. Save-only — no re-probe. */
 export const reorderLists = (orderedIds: string[]) =>
@@ -55,36 +58,27 @@ export const reorderLists = (orderedIds: string[]) =>
 export const reorderServices = (listId: string, orderedIds: string[]) =>
   invoke<Config>("reorder_services", { listId, orderedIds });
 
-export const updateSettings = (
-  criticalIntervalSecs?: number,
-  noncriticalIntervalSecs?: number,
-  timeoutMs?: number,
-  ipProviders?: string[],
-  downNotify?: boolean,
-  downSound?: boolean,
-  upNotify?: boolean,
-  upSound?: boolean,
-  blockedNotify?: boolean,
-  blockedSound?: boolean,
-  notifyVolume?: number,
-) =>
-  invoke<Config>("update_settings", {
-    criticalIntervalSecs: criticalIntervalSecs ?? null,
-    noncriticalIntervalSecs: noncriticalIntervalSecs ?? null,
-    timeoutMs: timeoutMs ?? null,
-    ipProviders: ipProviders ?? null,
-    downNotify: downNotify ?? null,
-    downSound: downSound ?? null,
-    upNotify: upNotify ?? null,
-    upSound: upSound ?? null,
-    blockedNotify: blockedNotify ?? null,
-    blockedSound: blockedSound ?? null,
-    notifyVolume: notifyVolume ?? null,
-  });
+/** The Settings form's Save as one write; omitted fields stay unchanged. */
+export type SettingsPatch = Partial<
+  Pick<
+    Config,
+    | "critical_interval_secs"
+    | "noncritical_interval_secs"
+    | "timeout_ms"
+    | "ip_providers"
+    | "down_notify"
+    | "down_sound"
+    | "up_notify"
+    | "up_sound"
+    | "blocked_notify"
+    | "blocked_sound"
+    | "notify_volume"
+    | "hide_dock"
+  >
+>;
 
-/** Toggle the macOS Dock icon. Persists + applies live; no-op on non-macOS. */
-export const setHideDock = (enabled: boolean) =>
-  invoke<Config>("set_hide_dock", { enabled });
+export const updateSettings = (patch: SettingsPatch) =>
+  invoke<Config>("update_settings", { patch });
 
 /** A single version's release notes. */
 export interface ChangelogEntry {

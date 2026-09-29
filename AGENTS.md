@@ -1,7 +1,7 @@
 # Qanary — project notes for Codex
 
 Desktop connectivity monitor. Traffic-light status for reachability of service lists.
-Full v1 design: [plans/qanary-v1.md](plans/qanary-v1.md).
+Full v1 design: `.claude/plans/qanary-v1.md` (local only — `.claude/` is gitignored).
 
 ## What it does
 
@@ -37,9 +37,9 @@ pnpm test:e2e                  # Playwright e2e vs pnpm dev (port 1420)
   component tests that render the real tree against a mocked `./api` (`src/App.test.tsx`).
   No Tauri runtime needed — `vi.mock("./api")` stands in for the `invoke` bridge.
 - **Frontend e2e** (`pnpm test:e2e`): Playwright drives `pnpm dev` (port 1420) in headless
-  Chromium. The Tauri IPC bridge is mocked via a minimal inline `window.__TAURI_INTERNALS__`
-  shim injected by `page.addInitScript` before page load. Covers: initial render, refresh,
-  add-list, settings.
+  system Chrome (`channel: "chrome"` — no `playwright install`). The Tauri IPC bridge is mocked
+  via a minimal inline `window.__TAURI_INTERNALS__` shim injected by `page.addInitScript` before page load. Covers: initial render, refresh,
+  add-list, settings, Config card, a list reorder surviving the next `service-update`.
   Native WKWebView (the actual app) still can't be WebDriver-driven on macOS — e2e targets the
   web frontend served by Vite, not the bundled native binary.
 - **Self-verify before declaring done.** After touching frontend code, run `pnpm test:ui`
@@ -54,7 +54,8 @@ pnpm test:e2e                  # Playwright e2e vs pnpm dev (port 1420)
 ## Conventions
 
 - User new to Rust → keep backend small + heavily commented.
-- Frontend subscribes to `status://update` Tauri event (no polling).
+- Frontend subscribes to the `status-update` (full snapshot) and `service-update` (per-Service
+  delta) Tauri events (no polling).
 - Backend owns all probe/rollup/persistence logic; tray (later) reuses same snapshot.
 
 ## Every reply: scannable, ends with a status footer
@@ -84,7 +85,7 @@ always in this order:
 - Location: `docs/adr/` (in the project root, checked into git).
 - Template: `docs/adr/_TEMPLATE.md`.
 - Numbering: 4-digit zero-padded, continuing from highest existing file.
-- Current highest: 0029 (settled snapshots and post-wake alert grace).
+- Current highest: 0031 (live state has one owner).
 
 ## TODO
 

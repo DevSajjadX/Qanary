@@ -1,3 +1,5 @@
+import type { EndpointDraft } from "../types";
+
 /**
  * Normalise any messy host string into a clean `host` or `host/path`.
  *
@@ -13,17 +15,21 @@
  *   "docs.google.com"                          → "docs.google.com"
  *   "google.com/inbox"                         → "google.com/inbox"
  */
-/** Parse a user-entered host string that may contain an inline port (e.g. `google.com:8080`).
- *  Runs parseHost first to strip scheme/www/path wildcards, then splits on the trailing `:port`.
- *  Port is clamped to 1–65535; out-of-range → undefined (caller defaults to 443). */
-export function splitHostPort(raw: string): { host: string; port: number | undefined } {
-  const cleaned = parseHost(raw);
-  const m = cleaned.match(/^([^:]+):(\d+)$/);
+/** Parse one user-entered endpoint (`host`, `host:port`, or a pasted URL) into a draft.
+ *  Runs parseHost first to strip markdown/scheme/www, then drops any path/query/fragment
+ *  (an endpoint is host + port only) and splits a trailing `:port`.
+ *  Returns null for what it can't read: an out-of-range port, IPv6 (not supported by the probe
+ *  yet), or leftovers with a stray colon. Whether the host itself is valid is the backend's
+ *  call (`store::validate_endpoint`) — this only parses shape. */
+export function splitHostPort(raw: string): EndpointDraft | null {
+  const cleaned = parseHost(raw).replace(/[/?#].*$/, "");
+  const m = cleaned.match(/^([^:[\]]+):(\d+)$/);
   if (m) {
     const port = Number(m[2]);
-    return { host: m[1], port: port >= 1 && port <= 65535 ? port : undefined };
+    return port >= 1 && port <= 65535 ? { host: m[1], port } : null;
   }
-  return { host: cleaned, port: undefined };
+  if (!cleaned || /[:[\]]/.test(cleaned)) return null;
+  return { host: cleaned };
 }
 
 export function parseHost(raw: string): string {

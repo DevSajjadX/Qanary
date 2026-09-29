@@ -4,6 +4,11 @@
 - **Date:** 2026-06-25
 - **Deciders:** Esi-Abolfazl
 
+> **Amendment 2026-09-30:** the "newer version → reset to available, even if ready" rule is
+> superseded by [ADR-0031](0031-live-state-has-one-owner.md): `downloading`/`ready` are kept and
+> the downloaded handle is what installs. The interval, the visibility re-check and the
+> same-version rule stand.
+
 ## Context
 
 Qanary previously checked for a newer version only at startup (once, in the main `useEffect`)

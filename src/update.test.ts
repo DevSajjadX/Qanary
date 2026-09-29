@@ -99,3 +99,23 @@ describe("downloadUpdate", () => {
     expect(onProgress).toHaveBeenCalledWith(100);
   });
 });
+
+describe("a downloaded update is the one that installs", () => {
+  it("a newer release found after the download doesn't replace it", async () => {
+    // Fresh module: the download test above has already pinned its own handle.
+    vi.resetModules();
+    const update = await import("./update");
+    const downloaded = makeUpdate("2.0.0");
+    mockUpdate = downloaded;
+    await update.checkForUpdate();
+    await update.downloadUpdate(() => {});
+
+    const newer = makeUpdate("2.0.1");
+    mockUpdate = newer;
+    expect((await update.checkForUpdate())?.version).toBe("2.0.1");
+
+    await update.installAndRelaunch().catch(() => {});
+    expect(downloaded.install).toHaveBeenCalled();
+    expect(newer.install).not.toHaveBeenCalled();
+  });
+});

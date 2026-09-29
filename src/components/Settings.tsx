@@ -7,13 +7,8 @@ import {
 } from "@tauri-apps/plugin-dialog";
 import type { Config } from "../types";
 import { parseHost } from "../utils/parseHost";
-import {
-  checkForUpdate,
-  downloadUpdate,
-  installAndRelaunch,
-  type UpdateInfo,
-} from "../update";
-import { exportConfig, setHideDock } from "../api";
+import type { UpdatePhase } from "../App";
+import { exportConfig, type SettingsPatch } from "../api";
 import { previewSound } from "../utils/alerts";
 import { Switch } from "./Switch";
 import {
@@ -32,13 +27,19 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Icon } from "./Icon";
 
-type UpdateState =
-  | "idle"
-  | "checking"
-  | "available"
-  | "installing"
-  | "up-to-date"
-  | "error";
+/** The update state App owns, plus its two actions — Settings only renders it. */
+export type Updater = {
+  phase: UpdatePhase | null;
+  version: string | null;
+  progress: number;
+  /** Resolves true when an update is available; rejects when the check failed. */
+  check: () => Promise<boolean>;
+  /** Download if needed, then install and relaunch. */
+  installNow: () => void;
+};
+
+/** Feedback for the last manual check — not update state. */
+type CheckResult = "idle" | "checking" | "up-to-date" | "error";
 
 /** True when at least one Sound alert is on — the one predicate for "the volume control applies". */
 const anySound = (d: boolean, u: boolean, b: boolean) => d || u || b;
@@ -51,8 +52,9 @@ function makeSlot(value: string): ProviderSlot {
   return { id: `slot-${_slotSeq++}`, value };
 }
 
+// At least 4 slots to type into; never fewer than the saved providers (a 5th must survive Save).
 function toSlots(arr: string[]): ProviderSlot[] {
-  const padded = arr.concat(["", "", "", ""]).slice(0, 4);
+  const padded = arr.concat(Array(Math.max(0, 4 - arr.length)).fill(""));
   return padded.map(makeSlot);
 }
 
@@ -68,7 +70,7 @@ function SortableProviderSlot({
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } =
     useSortable({ id: slot.id });
-  const style = { transform: CSS.Transform.toString(transform), transition };
+  const style = { transform: CSS.Translate.toString(transform), transition };
   return (
     <div className="provider-slot" ref={setNodeRef} style={style}>
       <button
@@ -97,24 +99,16 @@ export function Settings({
   onSave,
   onShowReleaseNotes,
   onImport,
+  updater,
 }: {
   config: Config | null;
   open: boolean;
   onClose: () => void;
-  onSave: (
-    criticalInterval: number,
-    noncriticalInterval: number,
-    providers: string[],
-    downNotify: boolean,
-    downSound: boolean,
-    upNotify: boolean,
-    upSound: boolean,
-    blockedNotify: boolean,
-    blockedSound: boolean,
-    volume: number,
-  ) => void;
+  /** Resolves once saved; a rejection keeps the modal open and shows the message. */
+  onSave: (patch: SettingsPatch) => Promise<unknown>;
   onShowReleaseNotes: () => void;
   onImport: (path: string) => void;
+  updater: Updater;
 }) {
   const [slots, setSlots] = useState<ProviderSlot[]>(() => toSlots([]));
   // Probe intervals held as strings while editing; parsed + floored (≥10) on Save.
@@ -130,15 +124,15 @@ export function Settings({
   // (ADR-0028): 0 mutes the audio, it does not uncheck anything. The flags choose which
   // directions make a sound; this chooses how loud.
   const [volume, setVolume] = useState(100);
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [updateState, setUpdateState] = useState<UpdateState>("idle");
+  const [checkResult, setCheckResult] = useState<CheckResult>("idle");
   const [version, setVersion] = useState("");
   // System settings: launch-at-login + hide-dock (macOS).
   const [loginEnabled, setLoginEnabled] = useState(false);
   const [loginInitial, setLoginInitial] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [hideDock, setHideDockState] = useState(false);
-  const [hideDockError, setHideDockError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [configMsg, setConfigMsg] = useState<{
     text: string;
     kind: "ok" | "err";
@@ -168,7 +162,7 @@ export function Settings({
     setBlockedSound(config.blocked_sound);
     setVolume(config.notify_volume);
     setHideDockState(config.hide_dock);
-    setHideDockError(null);
+    setSaveError(null);
     setLoginError(null);
     // Launch-at-login lives in the OS — query it fresh as the baseline.
     isEnabled()
@@ -200,11 +194,10 @@ export function Settings({
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setLoginError(null);
-    setHideDockError(null);
+    setSaveError(null);
 
-    // Apply system toggles only on Save. If any fails, surface the error and keep the
-    // modal open so the user sees it instead of silently closing.
-    let ok = true;
+    // Launch-at-login lives in the OS, not the config, so it's applied first; if it fails the
+    // modal stays open with the error and nothing else is written.
     try {
       if (loginEnabled !== loginInitial) {
         if (loginEnabled) await enable();
@@ -212,60 +205,44 @@ export function Settings({
       }
     } catch {
       setLoginError("Could not update login item");
-      ok = false;
+      return;
     }
-    try {
-      if (hideDock !== (config?.hide_dock ?? false)) {
-        await setHideDock(hideDock);
-      }
-    } catch {
-      setHideDockError("Could not change dock setting");
-      ok = false;
-    }
-    if (!ok) return;
     setLoginInitial(loginEnabled); // applied state is the new baseline
 
-    const providers = slots.map((s) => parseHost(s.value)).filter(Boolean);
     // Floor each interval at 10s; fall back to the default if left blank/invalid.
     const floorInterval = (raw: string, fallback: number) => {
       const n = Math.floor(Number(raw));
       return Number.isFinite(n) && n > 0 ? Math.max(n, 10) : fallback;
     };
-    onSave(
-      floorInterval(criticalInterval, 30),
-      floorInterval(noncriticalInterval, 60),
-      providers,
-      downNotify,
-      downSound,
-      upNotify,
-      upSound,
-      blockedNotify,
-      blockedSound,
-      volume,
-    );
-    onClose();
-  }
-
-  async function handleCheckUpdate() {
-    setUpdateState("checking");
+    setSaving(true);
     try {
-      const info = await checkForUpdate();
-      if (info) {
-        setUpdateInfo(info);
-        setUpdateState("available");
-      } else setUpdateState("up-to-date");
-    } catch {
-      setUpdateState("error");
+      await onSave({
+        critical_interval_secs: floorInterval(criticalInterval, 30),
+        noncritical_interval_secs: floorInterval(noncriticalInterval, 60),
+        ip_providers: slots.map((s) => parseHost(s.value)).filter(Boolean),
+        down_notify: downNotify,
+        down_sound: downSound,
+        up_notify: upNotify,
+        up_sound: upSound,
+        blocked_notify: blockedNotify,
+        blocked_sound: blockedSound,
+        notify_volume: volume,
+        hide_dock: hideDock,
+      });
+      onClose();
+    } catch (err) {
+      setSaveError(String(err));
+    } finally {
+      setSaving(false);
     }
   }
 
-  async function handleInstall() {
-    setUpdateState("installing");
+  async function handleCheckUpdate() {
+    setCheckResult("checking");
     try {
-      await downloadUpdate(() => {});
-      await installAndRelaunch();
+      setCheckResult((await updater.check()) ? "idle" : "up-to-date");
     } catch {
-      setUpdateState("error");
+      setCheckResult("error");
     }
   }
 
@@ -527,19 +504,17 @@ export function Settings({
                       onChange={setHideDockState}
                     />
                   </div>
-                  {hideDockError && (
-                    <span className="system-toggle-error">{hideDockError}</span>
-                  )}
                 </>
               )}
             </fieldset>
 
+            {saveError && <p className="modal-error" role="alert">{saveError}</p>}
             <div className="modal-actions">
-              <button type="button" className="modal-cancel" onClick={onClose}>
+              <button type="button" className="modal-cancel" onClick={onClose} disabled={saving}>
                 Cancel
               </button>
-              <button type="submit" className="modal-save">
-                Save
+              <button type="submit" className="modal-save" disabled={saving}>
+                {saving ? "Saving…" : "Save"}
               </button>
             </div>
           </form>
@@ -562,25 +537,21 @@ export function Settings({
             </div>
 
             <div className="update-actions">
-              {updateState === "up-to-date" && (
+              {updater.phase === null && checkResult === "up-to-date" && (
                 <span className="update-msg">Up to date</span>
               )}
-              {updateState === "error" && (
+              {updater.phase === null && checkResult === "error" && (
                 <span className="update-msg update-err">Check failed</span>
               )}
-              {updateState === "installing" && (
-                <span className="update-msg">Installing…</span>
-              )}
 
-              {updateState === "available" && updateInfo ? (
+              {updater.phase === "downloading" ? (
+                <span className="update-msg">Downloading… {updater.progress}%</span>
+              ) : updater.phase !== null && updater.version ? (
                 <>
                   <span className="update-available-label">
-                    v{updateInfo.version} available
+                    v{updater.version} {updater.phase === "ready" ? "ready" : "available"}
                   </span>
-                  <button
-                    className="update-install-btn"
-                    onClick={handleInstall}
-                  >
+                  <button className="update-install-btn" onClick={updater.installNow}>
                     Install &amp; restart
                   </button>
                 </>
@@ -588,13 +559,9 @@ export function Settings({
                 <button
                   className="update-check-btn"
                   onClick={handleCheckUpdate}
-                  disabled={
-                    updateState === "checking" || updateState === "installing"
-                  }
+                  disabled={checkResult === "checking"}
                 >
-                  {updateState === "checking"
-                    ? "Checking…"
-                    : "Check for updates"}
+                  {checkResult === "checking" ? "Checking…" : "Check for updates"}
                 </button>
               )}
             </div>

@@ -22,9 +22,9 @@ vi.mock("./api", () => ({
   reorderLists: vi.fn(),
   reorderServices: vi.fn(),
   updateSettings: vi.fn(),
-  setHideDock: vi.fn(),
   exportConfig: vi.fn(),
   importConfig: vi.fn(),
+  takeLoadWarning: vi.fn(),
 }));
 
 vi.mock("./update", () => ({
@@ -35,6 +35,7 @@ vi.mock("./update", () => ({
 
 import App from "./App";
 import * as api from "./api";
+import * as update from "./update";
 import type { Config, Snapshot } from "./types";
 
 // Minimal canned fixtures
@@ -87,10 +88,14 @@ beforeEach(() => {
   vi.mocked(api.getSnapshot).mockResolvedValue(SNAPSHOT);
   vi.mocked(api.getConfig).mockResolvedValue(CONFIG);
   vi.mocked(api.takeNewChangelog).mockResolvedValue([]);
+  vi.mocked(api.takeLoadWarning).mockResolvedValue(null);
   vi.mocked(api.getChangelog).mockResolvedValue([]);
   vi.mocked(api.onStatusUpdate).mockResolvedValue(() => {});
   vi.mocked(api.onServiceUpdate).mockResolvedValue(() => {});
-  vi.mocked(api.refreshNow).mockResolvedValue(SNAPSHOT);
+  vi.mocked(api.refreshNow).mockResolvedValue();
+  vi.mocked(update.checkForUpdate).mockResolvedValue(null);
+  vi.mocked(update.downloadUpdate).mockResolvedValue();
+  vi.mocked(update.installAndRelaunch).mockResolvedValue();
 });
 
 describe("App", () => {
@@ -99,9 +104,237 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByText("All clear")).toBeInTheDocument());
   });
 
+  // B07: an unmeasured or empty app claimed "All clear", and an empty config waited forever.
+  it("says Checking, not All clear, before anything is measured", async () => {
+    vi.mocked(api.getSnapshot).mockResolvedValue(null);
+    render(<App />);
+    expect(screen.getByText("Checking…")).toBeInTheDocument();
+    expect(screen.queryByText("All clear")).not.toBeInTheDocument();
+  });
+
+  it("with no lists, offers Add list instead of waiting for a probe", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({ ...SNAPSHOT, lists: [] });
+    render(<App />);
+    expect(await screen.findByText("Nothing to watch")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Add list" }));
+    expect(screen.getByRole("heading", { name: /list/i })).toBeInTheDocument();
+  });
+
   it("renders list name from snapshot", async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByText("Internet")).toBeInTheDocument());
+  });
+
+  it("shows the startup config-recovery warning once and lets the user dismiss it", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.takeLoadWarning).mockResolvedValue("Your settings file isn't valid.");
+    render(<App />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Your settings file isn't valid.");
+    await user.click(screen.getByRole("button", { name: /dismiss/i }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("a rejected settings save keeps Settings open with the error and the edits", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.updateSettings).mockRejectedValue("Couldn't save your settings: disk full");
+    render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+
+    await user.click(screen.getByRole("button", { name: /menu/i }));
+    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("disk full");
+    expect(screen.getByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
+  });
+
+  it("Dock and the other settings are saved in one write", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.updateSettings).mockResolvedValue(CONFIG);
+    render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+
+    await user.click(screen.getByRole("button", { name: /menu/i }));
+    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledTimes(1));
+    expect(api.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ hide_dock: false }));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: /^settings$/i })).not.toBeInTheDocument(),
+    );
+  });
+
+  // A01: a service added as a bare host ("google.com") used to round-trip through
+  // "google.com: google.com" and be saved as that literal host — permanently Down.
+  it("editing a bare-host service and saving unchanged keeps its host", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getConfig).mockResolvedValue({
+      ...CONFIG,
+      lists: [{
+        id: "internet", name: "Internet", icon: "🌐", collapsed: false, critical: false,
+        services: [{
+          id: "s1", label: "google.com", enabled: true,
+          endpoints: [{ id: "e1", host: "google.com", port: 443 }],
+        }],
+      }],
+    });
+    vi.mocked(api.updateService).mockResolvedValue(CONFIG);
+    render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+
+    await user.click(screen.getByTitle("Service options"));
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    expect(screen.getByLabelText("Label")).toHaveValue("google.com");
+    expect(screen.getByLabelText("Endpoints")).toHaveValue("google.com");
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(api.updateService).toHaveBeenCalledWith("internet", "s1", "google.com", [
+      { host: "google.com" },
+    ]);
+  });
+
+  // A05: collapse lived in ServiceList local state, so remounting it (reorder mode) reverted it.
+  it("a collapsed list stays collapsed across entering and leaving reorder mode", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.setListCollapsed).mockResolvedValue(CONFIG);
+    render(<App />);
+    await waitFor(() => screen.getByText("Google"));
+
+    await user.click(screen.getByTitle("Collapse"));
+    expect(api.setListCollapsed).toHaveBeenCalledWith("internet", true);
+    expect(screen.queryByText("Google")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /menu/i }));
+    await user.click(screen.getByRole("button", { name: /edit order/i }));
+    await user.click(screen.getByRole("button", { name: /^done$/i }));
+    expect(screen.queryByText("Google")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Expand")).toBeInTheDocument();
+  });
+
+  it("the list options menu opens reorder mode", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => screen.getByText("Google"));
+
+    await user.click(screen.getByTitle("List options"));
+    const items = screen.getAllByRole("button").filter((b) => b.className.includes("list-dropdown-item"));
+    expect(items.map((b) => b.textContent)).toEqual(["Edit", "Edit order", "Delete"]);
+    await user.click(screen.getByRole("button", { name: /^edit order$/i }));
+    expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
+    expect(screen.getAllByTitle("Drag to reorder").length).toBeGreaterThan(0);
+  });
+
+  // R3: a layout edit painted with a bare setSnapshot left the delta merge base behind, so the
+  // next per-service update merged onto the old layout and reverted the edit on screen.
+  it("a collapse survives the next per-service update", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.setListCollapsed).mockResolvedValue(CONFIG);
+    render(<App />);
+    await waitFor(() => screen.getByText("Google"));
+
+    await user.click(screen.getByTitle("Collapse"));
+    const onDelta = vi.mocked(api.onServiceUpdate).mock.calls[0][0];
+    act(() =>
+      onDelta({
+        list_id: "internet",
+        service: { ...SNAPSHOT.lists[0].services[0], state: "down" },
+        list_all_down: true,
+        overall: "green",
+        cut_off: false,
+        settled: true,
+      }),
+    );
+    expect(screen.queryByText("Google")).not.toBeInTheDocument();
+    expect(screen.getByTitle("Expand")).toBeInTheDocument();
+  });
+
+  it("a refused collapse is reported and the list repaints from the backend", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.setListCollapsed).mockRejectedValue("Couldn't save your settings: disk full");
+    render(<App />);
+    await waitFor(() => screen.getByText("Google"));
+
+    await user.click(screen.getByTitle("Collapse"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("disk full");
+    await waitFor(() => expect(screen.getByText("Google")).toBeInTheDocument());
+  });
+
+  // B03: Settings showed only 4 provider slots, so saving dropped a 5th imported provider.
+  it("saving Settings keeps a 5th IP provider", async () => {
+    const user = userEvent.setup();
+    const providers = ["a.com", "b.com", "c.com", "d.com", "e.com"];
+    vi.mocked(api.getConfig).mockResolvedValue({ ...CONFIG, ip_providers: providers });
+    vi.mocked(api.updateSettings).mockResolvedValue(CONFIG);
+    render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+
+    await user.click(screen.getByRole("button", { name: /menu/i }));
+    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(api.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ ip_providers: providers }),
+      ),
+    );
+  });
+
+  // A12: Settings kept its own update state and handle. Downloading from the hero and then
+  // checking from Settings (or the reverse) could re-download or install a different release.
+  describe("updates have one owner", () => {
+    async function openSettings(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByRole("button", { name: /menu/i }));
+      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    }
+
+    it("a newer release found after a download installs the downloaded one, once", async () => {
+      const user = userEvent.setup();
+      vi.mocked(update.checkForUpdate).mockResolvedValue({ version: "1.0.1", body: null });
+      render(<App />);
+      await user.click(await screen.findByRole("button", { name: /^update$/i }));
+      await screen.findByRole("button", { name: /^restart$/i });
+
+      // The 6h re-check (here via the visibility path) finds 1.0.2 while 1.0.1 is on disk.
+      vi.mocked(update.checkForUpdate).mockResolvedValue({ version: "1.0.2", body: null });
+      const later = Date.now() + 6 * 60 * 60 * 1000 + 1;
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(later);
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(update.checkForUpdate).toHaveBeenCalledTimes(2));
+      nowSpy.mockRestore();
+
+      await openSettings(user);
+      expect(screen.getByText("v1.0.1 ready")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: /install & restart/i }));
+      expect(update.installAndRelaunch).toHaveBeenCalledTimes(1);
+      expect(update.downloadUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it("Settings shows a hero-started download instead of offering a second one", async () => {
+      const user = userEvent.setup();
+      vi.mocked(update.checkForUpdate).mockResolvedValue({ version: "1.0.1", body: null });
+      vi.mocked(update.downloadUpdate).mockReturnValue(new Promise(() => {}));
+      render(<App />);
+      await user.click(await screen.findByRole("button", { name: /^update$/i }));
+
+      await openSettings(user);
+      expect(screen.getByText(/downloading…/i, { selector: ".update-msg" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /install & restart/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /check for updates/i })).not.toBeInTheDocument();
+      expect(update.downloadUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it("Settings' check reports up to date", async () => {
+      const user = userEvent.setup();
+      render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      await openSettings(user);
+      await user.click(screen.getByRole("button", { name: /check for updates/i }));
+      expect(await screen.findByText("Up to date")).toBeInTheDocument();
+    });
   });
 
   it("refresh button calls api.refreshNow", async () => {
@@ -255,14 +488,16 @@ describe("App", () => {
 
       await user.click(screen.getByRole("button", { name: /^save$/i }));
 
-      // `{volume: 0, sound: true}` is a legal persisted state now (args 5, 7, 9 are the
-      // down/up/blocked sound flags) — `alerts.ts::soundAudible` is what keeps it honest.
-      const calls = vi.mocked(api.updateSettings).mock.calls;
-      const args = calls[calls.length - 1];
-      expect(args[10]).toBe(0); // notifyVolume
-      expect(args[5]).toBe(true); // downSound
-      expect(args[7]).toBe(true); // upSound
-      expect(args[9]).toBe(true); // blockedSound
+      // `{volume: 0, sound: true}` is a legal persisted state now — `alerts.ts::soundAudible`
+      // is what keeps it honest.
+      expect(api.updateSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          notify_volume: 0,
+          down_sound: true,
+          up_sound: true,
+          blocked_sound: true,
+        }),
+      );
     });
   });
 
@@ -371,7 +606,12 @@ describe("App", () => {
      * before any snapshot is driven.
      */
     async function mount(config: Partial<Config> = {}) {
-      vi.mocked(api.getConfig).mockResolvedValue({ ...CONFIG, ...config });
+      // The config mirrors CRIT's list: pending edges are reconciled against it (A11).
+      const lists = [{
+        id: "internet", name: "Internet", icon: "🌐", collapsed: false, critical: true,
+        services: [],
+      }];
+      vi.mocked(api.getConfig).mockResolvedValue({ ...CONFIG, lists, ...config });
       render(<App />);
       // `act` is load-bearing here, not decoration: configRef is assigned in a passive effect,
       // and React schedules those off the scheduler (MessageChannel), which fake timers don't
@@ -483,6 +723,31 @@ describe("App", () => {
         title: "Total outage",
         body: "All critical lists are down.",
       });
+    });
+
+    // A11: the held outage belongs to a list the user deleted while offline.
+    it("an outage held behind a cut-off is dropped when its list is deleted meanwhile", async () => {
+      const { sendNotification } = await import("@tauri-apps/plugin-notification");
+      const handleSnapshot = await mount({ down_notify: true });
+      handleSnapshot(CRIT);
+      handleSnapshot({ ...CRIT_DOWN, cut_off: true });
+      await settle(QUIET_MS);
+      expect(sendNotification).toHaveBeenCalledTimes(1); // "You're offline"; outage held
+
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      // Same flags as mount(): only the list is gone, so reconcile is what keeps it quiet.
+      vi.mocked(api.removeList).mockResolvedValue({ ...CONFIG, down_notify: true, lists: [] });
+      fireEvent.click(screen.getByTitle("List options"));
+      fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+      await act(async () => {
+        await settle(0);
+      });
+      expect(api.removeList).toHaveBeenCalledWith("internet");
+
+      // The next settled round still carries the list (the backend's lags the delete): no alert.
+      handleSnapshot({ ...CRIT_DOWN, cut_off: false });
+      await settle(QUIET_MS);
+      expect(sendNotification).toHaveBeenCalledTimes(1);
     });
 
     it("escalation: an outage alert, then a later cut-off edge, alerts twice", async () => {
@@ -620,6 +885,63 @@ describe("App", () => {
         expect(sendNotification).toHaveBeenCalledWith(OFFLINE);
       });
 
+      /** A wake nobody has observed yet: the wall clock jumps, no heartbeat tick runs. */
+      function jumpClock(ms: number) {
+        const fakeNow = Date.now;
+        vi.spyOn(Date, "now").mockImplementation(() => fakeNow.call(Date) + ms);
+      }
+
+      // A09: the frozen flush timer can be the first callback after resume. It must not
+      // describe the sleep; the grace window pays out what the batch owed, once.
+      it("a flush that fires before the heartbeat after a wake waits out the grace window", async () => {
+        const { sendNotification } = await import("@tauri-apps/plugin-notification");
+        const handleSnapshot = await mount({ down_notify: true });
+        handleSnapshot(CRIT);
+        // Edge at mount time: flush due at +6000 (quiet window), heartbeat ticks at +5000, +10000.
+        handleSnapshot(CRIT_DOWN);
+        await settle(5_500); // the +5000 tick ran and saw no gap
+
+        jumpClock(3_600_000);
+        await settle(1_000); // the flush (+6000) runs before the next tick (+10000)
+        expect(sendNotification).not.toHaveBeenCalled();
+
+        await settle(WAKE_GRACE_MAX_MS);
+        await settle(QUIET_MS);
+        expect(sendNotification).toHaveBeenCalledTimes(1);
+      });
+
+      it("a snapshot that arrives first after a wake opens the grace window", async () => {
+        const { sendNotification } = await import("@tauri-apps/plugin-notification");
+        // up_notify: diffing the post-wake cut-off would make the recovery below an "up" edge.
+        const handleSnapshot = await mount({ down_notify: true, up_notify: true });
+        handleSnapshot(CRIT);
+
+        jumpClock(3_600_000);
+        handleSnapshot({ ...CRIT_DOWN, cut_off: true }); // network not up yet
+        await settle(QUIET_MS);
+        expect(sendNotification).not.toHaveBeenCalled();
+
+        handleSnapshot(CRIT); // back before the window closed
+        await settle(WAKE_GRACE_MAX_MS + QUIET_MS);
+        expect(sendNotification).not.toHaveBeenCalled();
+      });
+
+      // A10: a cut-off with no list transition has nothing in pendingRef to re-arm on.
+      it("a cut-off edge the sleep interrupted is still announced, once", async () => {
+        const { sendNotification } = await import("@tauri-apps/plugin-notification");
+        const handleSnapshot = await mount({ down_notify: true });
+        handleSnapshot(SNAPSHOT); // non-critical only: cut-off is the sole edge
+
+        handleSnapshot({ ...SNAPSHOT, cut_off: true });
+        await sleepAndWake(3_600_000);
+        expect(sendNotification).not.toHaveBeenCalled();
+
+        await settle(WAKE_GRACE_MAX_MS);
+        await settle(QUIET_MS);
+        expect(sendNotification).toHaveBeenCalledTimes(1);
+        expect(sendNotification).toHaveBeenCalledWith(OFFLINE);
+      });
+
       it("an edge the sleep interrupted is still announced, once", async () => {
         const { sendNotification } = await import("@tauri-apps/plugin-notification");
         const handleSnapshot = await mount({ down_notify: true });
@@ -640,6 +962,23 @@ describe("App", () => {
         });
       });
     });
+  });
+
+  it("a refused import closes Settings and says why", async () => {
+    const { open: openMock } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(openMock).mockResolvedValue("/tmp/picked-config.json");
+    vi.mocked(api.importConfig).mockRejectedValue('Invalid config file: "x" isn\'t a valid host name.');
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+
+    await user.click(screen.getByRole("button", { name: /menu/i }));
+    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await user.click(screen.getByRole("button", { name: /import/i }));
+    await user.click(await screen.findByRole("button", { name: /overwrite/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Invalid config file");
+    expect(screen.queryByRole("heading", { name: /^settings$/i })).not.toBeInTheDocument();
   });
 
   it("Import confirmation Cancel aborts without calling importConfig", async () => {
