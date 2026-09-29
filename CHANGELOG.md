@@ -8,6 +8,35 @@ heading) become that release's notes. Dev-log-only subsections (`## Internal`, `
 `## Development`, `## Chore`, `## CI`, `## Build`, `## More info`) appear on the GitHub
 release page but are hidden from the in-app "What's new" modal.
 
+## [0.6.5]
+
+## What's new
+
+- **Edit order** is now in each list's ⋯ menu, so you can rearrange without going to the main menu.
+- With no lists, Qanary offers a quick **Add list** link.
+
+## Fix
+
+- Editing a service and saving it no longer breaks it. Services broken this way are repaired automatically.
+- Your settings are never lost. If the settings file is damaged, Qanary keeps a backup and tells you.
+- If a change can't be saved, you now see a message instead of losing it on restart.
+- Pasting a full web address (like `https://x.com/home`) now just works.
+- Collapsed lists stay collapsed, and rearranged lists stay in place.
+- Dragging a list or service no longer stretches it.
+- Alerts after waking your Mac are calmer and more accurate.
+- Updating always installs the version you downloaded.
+- Qanary says "Checking…" at startup instead of "All clear" before it has checked anything.
+
+## More info
+
+- [ADR 0030 — config writes never lose data](https://github.com/Esi-Abolfazl/Qanary/blob/main/docs/adr/0030-config-writes-never-lose-data.md).
+- [ADR 0031 — live state has one owner](https://github.com/Esi-Abolfazl/Qanary/blob/main/docs/adr/0031-live-state-has-one-owner.md).
+
+## Internal
+
+- Fixes from the 2026-09-23 audit: atomic config saves, one validation rule for hosts, stale probe results dropped, a single owner for update state.
+- Releases now run the type check, unit tests, and a tag/version check before building.
+
 ## [0.6.4]
 
 ## Fix
