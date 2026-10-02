@@ -85,7 +85,7 @@ always in this order:
 - Location: `docs/adr/` (in the project root, checked into git).
 - Template: `docs/adr/_TEMPLATE.md`.
 - Numbering: 4-digit zero-padded, continuing from highest existing file.
-- Current highest: 0031 (live state has one owner).
+- Current highest: 0039 (list-name glide uses a transform).
 
 ## TODO
 

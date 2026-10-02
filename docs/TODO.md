@@ -42,6 +42,10 @@
 - [ ] `timeout_ms` bounds check — not user-editable yet, only reachable by hand-edit or import (ADR-0030 follow-up).
 - [ ] TS types generated from the Rust models (`ts-rs` / `specta`) instead of the hand-kept mirror in `src/types.ts`.
 - [ ] Probe redirect policy has no automated test (needs a local TLS server) — `state.rs` `probe_client`.
+- [ ] Check the tray icons on Windows/Linux when those targets ship — they are drawn for macOS (44 px, shown 18 pt tall); crimson Offline is low-contrast on a dark menu bar (ADR-0034).
+- [ ] Native window vibrancy for the Glass look (needs `transparent` window config + a macOS private-API Cargo feature) — the blur is CSS-only today (ADR-0032).
+- [ ] Look at the Glass look, the orb motion and the list-name glide in the real WKWebView (macOS app), and on Windows/Linux when those targets ship — they were only checked in Chromium (ADR-0037, ADR-0038, ADR-0039).
+- [ ] Favicons: sites hosted inside Iran often have no Google s2 icon, so they show the first letter. Consider a bundled fallback or a per-service icon (ADR-0032).
 - [ ] Bundle id `com.qanary.app` stays. Renaming it orphans every user's config dir unless it ships with a migration and an ADR.
 
 ### Optional features
