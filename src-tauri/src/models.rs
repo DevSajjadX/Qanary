@@ -178,6 +178,9 @@ pub struct Config {
     /// Hide the Dock icon — run as a tray/menu-bar-only app. macOS only; default off.
     #[serde(default)]
     pub hide_dock: bool,
+    /// Look of the menu-bar (tray) icon. Additive — older configs load as `Rings` via serde default.
+    #[serde(default)]
+    pub tray_style: TrayStyle,
     /// Last app version we showed the "What's new" changelog for. On startup, if the
     /// running version differs, we show that version's CHANGELOG section once and update
     /// this. None = fresh install (we record the version but don't show notes).
@@ -277,6 +280,7 @@ impl Default for Config {
             blocked_sound: true,
             notify_volume: 100,
             hide_dock: false,
+            tray_style: TrayStyle::default(),
             last_changelog_version: None,
         }
     }
@@ -338,6 +342,26 @@ pub fn worst_state(states: &[ServiceState]) -> ServiceState {
         .copied()
         .max_by_key(|s| s.rank())
         .unwrap_or(ServiceState::Checking)
+}
+
+/// How the menu-bar (tray) icon looks: one of two pictures (rings or a heartbeat), each either
+/// bare on the menu bar or cut out of a filled rounded square. All carry the severity by colour
+/// and by shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TrayStyle {
+    /// Concentric rings (the brand's signal mark), bare. The default.
+    #[default]
+    #[serde(rename = "rings")]
+    Rings,
+    /// A canary heartbeat in a rounded-square outline.
+    #[serde(rename = "pulse")]
+    Pulse,
+    /// Rings cut out of a filled rounded square.
+    #[serde(rename = "rings-filled")]
+    RingsFilled,
+    /// The heartbeat cut out of a filled rounded square.
+    #[serde(rename = "pulse-filled")]
+    PulseFilled,
 }
 
 /// Overall traffic-light severity.

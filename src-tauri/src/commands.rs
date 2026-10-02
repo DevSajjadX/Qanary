@@ -47,6 +47,26 @@ pub fn refresh_now(app: AppHandle) {
     let _ = app.state::<AppState>().probe_now.send(()); // Err just means no subscribers yet — harmless
 }
 
+/// Re-check one service right now — every endpoint of it, or just `endpoint_id` — without
+/// touching anything else. It shows `Checking` immediately; the result arrives as an ordinary
+/// Status delta, so nothing is returned.
+#[tauri::command]
+pub fn check_now(
+    app: AppHandle,
+    list_id: String,
+    service_id: String,
+    endpoint_id: Option<String>,
+) -> Result<(), String> {
+    crate::scheduler::check_now(&app, &list_id, &service_id, endpoint_id.as_deref())
+}
+
+/// Re-check every service of one list right now, leaving the other lists alone. Each shows
+/// `Checking` immediately; the results arrive as ordinary Status deltas.
+#[tauri::command]
+pub fn check_list(app: AppHandle, list_id: String) -> Result<(), String> {
+    crate::scheduler::check_list_now(&app, &list_id)
+}
+
 /// Add one or more services (each with their endpoints) to a list.
 /// Replaces the old single-host `add_service` command.
 #[tauri::command]
@@ -152,6 +172,7 @@ pub fn reset_config(app: AppHandle) -> Result<Config, String> {
         Ok(())
     })?;
     apply_dock_policy(&app, cfg.hide_dock);
+    crate::tray::set_style(&app, cfg.tray_style);
     Ok(cfg)
 }
 
@@ -179,17 +200,22 @@ pub struct SettingsPatch {
     pub blocked_sound: Option<bool>,
     pub notify_volume: Option<u8>,
     pub hide_dock: Option<bool>,
+    pub tray_style: Option<crate::models::TrayStyle>,
 }
 
 #[tauri::command]
 pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<Config, String> {
     let hide_dock = patch.hide_dock;
+    let tray_style = patch.tray_style;
     let cfg = mutate(&app, |cfg| {
         apply_settings(cfg, patch);
         Ok(())
     })?;
     if hide_dock.is_some() {
         apply_dock_policy(&app, cfg.hide_dock);
+    }
+    if tray_style.is_some() {
+        crate::tray::set_style(&app, cfg.tray_style);
     }
     Ok(cfg)
 }
@@ -230,6 +256,9 @@ fn apply_settings(cfg: &mut Config, p: SettingsPatch) {
     }
     if let Some(v) = p.notify_volume {
         cfg.notify_volume = v;
+    }
+    if let Some(v) = p.tray_style {
+        cfg.tray_style = v;
     }
     // After the assignments, so an out-of-range `notify_volume` from this payload is clamped
     // rather than persisted as-is.
@@ -577,6 +606,7 @@ pub fn import_config(app: AppHandle, path: String) -> Result<Config, String> {
         Ok(())
     })?;
     apply_dock_policy(&app, cfg.hide_dock);
+    crate::tray::set_style(&app, cfg.tray_style);
     Ok(cfg)
 }
 
@@ -643,6 +673,44 @@ mod settings_tests {
         assert_eq!(p.hide_dock, Some(true));
         assert_eq!(p.ip_providers.unwrap(), vec!["a.com"]);
         assert!(p.down_sound.is_none());
+    }
+
+    /// The tray look is a plain setting: given → applies, omitted → stays.
+    #[test]
+    fn patch_sets_the_tray_style() {
+        use crate::models::TrayStyle;
+        let mut cfg = Config::default();
+        assert_eq!(cfg.tray_style, TrayStyle::Rings, "default look");
+        apply_settings(&mut cfg, SettingsPatch { tray_style: Some(TrayStyle::Pulse), ..Default::default() });
+        assert_eq!(cfg.tray_style, TrayStyle::Pulse);
+        apply_settings(&mut cfg, SettingsPatch::default());
+        assert_eq!(cfg.tray_style, TrayStyle::Pulse, "omitted = unchanged");
+    }
+
+    /// The frontend sends the style as a lowercase word; a config file from before the setting
+    /// existed loads as Rings.
+    #[test]
+    fn tray_style_wire_format_and_old_configs() {
+        use crate::models::TrayStyle;
+        let p: SettingsPatch = serde_json::from_str(r#"{"tray_style":"pulse"}"#).unwrap();
+        assert_eq!(p.tray_style, Some(TrayStyle::Pulse));
+        for (wire, style) in [
+            ("rings", TrayStyle::Rings),
+            ("pulse", TrayStyle::Pulse),
+            ("rings-filled", TrayStyle::RingsFilled),
+            ("pulse-filled", TrayStyle::PulseFilled),
+        ] {
+            let p: SettingsPatch = serde_json::from_str(&format!(r#"{{"tray_style":"{wire}"}}"#)).unwrap();
+            assert_eq!(p.tray_style, Some(style));
+            assert_eq!(serde_json::to_value(style).unwrap(), wire);
+        }
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"tray_style":"nope"}"#).is_err());
+
+        let mut json = serde_json::to_value(Config::default()).unwrap();
+        assert_eq!(json["tray_style"], "rings");
+        json.as_object_mut().unwrap().remove("tray_style");
+        let old: Config = serde_json::from_value(json).unwrap();
+        assert_eq!(old.tray_style, TrayStyle::Rings);
     }
 }
 

@@ -13,6 +13,7 @@ mod scheduler;
 mod state;
 mod store;
 mod tray;
+mod tray_menu;
 mod wan;
 
 use models::Snapshot;
@@ -64,11 +65,15 @@ pub fn emit_checking(app: &tauri::AppHandle) {
 /// and push it, keeping every probe status. Used by reorder/collapse, which don't re-probe.
 pub fn emit_layout(app: &tauri::AppHandle, cfg: &models::Config) {
     let state = app.state::<AppState>();
-    let mut guard = state.snapshot.lock().unwrap();
-    if let Some(snap) = guard.as_mut() {
-        probe::sync_layout(snap, cfg);
-        let _ = app.emit(EVENT_STATUS, &*snap);
+    {
+        let mut guard = state.snapshot.lock().unwrap();
+        if let Some(snap) = guard.as_mut() {
+            probe::sync_layout(snap, cfg);
+            let _ = app.emit(EVENT_STATUS, &*snap);
+        }
     }
+    // Order, names and criticality changed: the tray menu lists them too (lock already released).
+    tray::refresh_menu(app);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -118,6 +123,7 @@ pub fn run() {
 
             // Snapshot the flags we need before moving `config` into the managed state.
             let hide_dock = config.hide_dock;
+            let tray_style = config.tray_style;
 
             // Broadcast channel for the "probe now" signal. Capacity 1 is enough: a missed
             // value just means a task was mid-probe, which is exactly when we don't need to wake it.
@@ -151,6 +157,7 @@ pub fn run() {
             }
 
             // Build the tray icon before emit_checking so update_icon finds the handle.
+            tray::init_style(tray_style);
             tray::build_tray(app.handle())?;
 
             // Paint a checking snapshot (so the UI shows lists on first paint instead of the
@@ -176,6 +183,8 @@ pub fn run() {
             commands::get_snapshot,
             commands::get_config,
             commands::refresh_now,
+            commands::check_now,
+            commands::check_list,
             commands::add_services,
             commands::update_service,
             commands::remove_service,

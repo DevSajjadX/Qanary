@@ -7,7 +7,9 @@
 //!
 //! This module is heavily commented — the reader is new to Rust.
 
-use crate::models::{Service, ServiceDelta, ServiceStatus, Severity, Snapshot};
+use crate::models::{
+    worst_state, EndpointStatus, Service, ServiceDelta, ServiceState, ServiceStatus, Severity, Snapshot,
+};
 use crate::state::AppState;
 use crate::{EVENT_SERVICE, EVENT_STATUS};
 use std::sync::atomic::Ordering;
@@ -134,8 +136,8 @@ async fn run_service_task(
 
         // Merge this Service's status into the shared snapshot, recompute rollups, and emit the
         // delta. The lock is held only for this synchronous block — never across an await.
-        if let Some(overall) = apply_service_status(&app, &list_id, generation, status) {
-            crate::tray::update_icon(&app, overall);
+        if let Some((overall, cut_off)) = apply_service_status(&app, &list_id, generation, status) {
+            crate::tray::update_icon(&app, overall, cut_off);
         }
 
         // Wait the effective interval, but wake early on a "probe now" signal.
@@ -166,13 +168,200 @@ fn apply_service_status(
     list_id: &str,
     generation: u64,
     status: ServiceStatus,
-) -> Option<Severity> {
+) -> Option<(Severity, bool)> {
     let state = app.state::<AppState>();
     let mut guard = state.snapshot.lock().unwrap();
     let current = state.generation.load(Ordering::SeqCst);
     let delta = accept_result(guard.as_mut()?, current, generation, list_id, status)?;
     let _ = app.emit(EVENT_SERVICE, &delta);
-    Some(delta.overall)
+    Some((delta.overall, delta.cut_off))
+}
+
+// ---------------------------------------------------------------------------
+// One-off checks ("check this one now")
+// ---------------------------------------------------------------------------
+
+/// A Service's status with some endpoints put back to `Checking` — all of them when
+/// `endpoint_id` is `None`, else just that one — so the UI can show "being re-checked" at once.
+/// Pure. The Service's own state is rolled up again from its endpoints.
+pub fn checking_status(current: &ServiceStatus, endpoint_id: Option<&str>) -> ServiceStatus {
+    let mut s = current.clone();
+    for ep in s.endpoints.iter_mut() {
+        if endpoint_id.is_none_or(|id| ep.id == id) {
+            ep.state = ServiceState::Checking;
+            ep.latency_ms = None;
+        }
+    }
+    s.state = worst_state(&s.endpoints.iter().map(|e| e.state).collect::<Vec<_>>());
+    s
+}
+
+/// A Service's status with one endpoint's fresh result swapped in and the Service's state rolled
+/// up again. An endpoint that is no longer in the Service (it was edited meanwhile) changes nothing.
+pub fn merge_endpoint(current: &ServiceStatus, fresh: &EndpointStatus) -> ServiceStatus {
+    let mut s = current.clone();
+    if let Some(slot) = s.endpoints.iter_mut().find(|e| e.id == fresh.id) {
+        *slot = fresh.clone();
+    }
+    s.state = worst_state(&s.endpoints.iter().map(|e| e.state).collect::<Vec<_>>());
+    s
+}
+
+/// Put a Service (or one of its endpoints) back to `Checking` in the snapshot **without touching
+/// the rollups**: `all_down`, `overall`, `cut_off` and `settled` stay exactly as they were, and
+/// the returned delta carries those unchanged values. Re-checking one site is local — it must not
+/// make the whole app look like it is refreshing (gray orb), nor flip an Offline machine out of
+/// "offline" for the length of one probe. The real result later goes through `recompute_delta`.
+/// `None` for an unknown list/service.
+pub fn mark_checking(
+    snap: &mut Snapshot,
+    list_id: &str,
+    service_id: &str,
+    endpoint_id: Option<&str>,
+) -> Option<ServiceDelta> {
+    let list = snap.lists.iter_mut().find(|l| l.id == list_id)?;
+    let slot = list.services.iter_mut().find(|s| s.id == service_id)?;
+    *slot = checking_status(slot, endpoint_id);
+    Some(ServiceDelta {
+        list_id: list_id.to_string(),
+        service: slot.clone(),
+        list_all_down: list.all_down,
+        overall: snap.overall,
+        cut_off: snap.cut_off,
+        settled: snap.settled,
+    })
+}
+
+/// `mark_checking` on the live snapshot, with the same lock discipline and generation check as
+/// `apply_derived`. Returns whether the target was marked.
+fn apply_marking(
+    app: &AppHandle,
+    list_id: &str,
+    service_id: &str,
+    generation: u64,
+    endpoint_id: Option<&str>,
+) -> bool {
+    let state = app.state::<AppState>();
+    let mut guard = state.snapshot.lock().unwrap();
+    let Some(snap) = guard.as_mut() else { return false };
+    if state.generation.load(Ordering::SeqCst) != generation {
+        return false;
+    }
+    match mark_checking(snap, list_id, service_id, endpoint_id) {
+        Some(delta) => {
+            let _ = app.emit(EVENT_SERVICE, &delta);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Rewrite one Service in the live snapshot from its *current* status, then roll up, emit the
+/// delta and return the new (overall, cut_off). Same lock discipline and generation check as
+/// `apply_service_status`: the read, the rewrite and the emit all happen under the snapshot lock,
+/// so a one-off check can't clobber a result that landed a moment earlier.
+fn apply_derived(
+    app: &AppHandle,
+    list_id: &str,
+    service_id: &str,
+    generation: u64,
+    derive: impl FnOnce(&ServiceStatus) -> ServiceStatus,
+) -> Option<(Severity, bool)> {
+    let state = app.state::<AppState>();
+    let mut guard = state.snapshot.lock().unwrap();
+    let snap = guard.as_mut()?;
+    let current = snap
+        .lists
+        .iter()
+        .find(|l| l.id == list_id)?
+        .services
+        .iter()
+        .find(|s| s.id == service_id)?
+        .clone();
+    let next = derive(&current);
+    let live = state.generation.load(Ordering::SeqCst);
+    let delta = accept_result(snap, live, generation, list_id, next)?;
+    let _ = app.emit(EVENT_SERVICE, &delta);
+    Some((delta.overall, delta.cut_off))
+}
+
+/// Re-check one Service now — every endpoint of it, or only `endpoint_id` — leaving everything
+/// else (other services, the schedule, the WAN lookup) alone. The target shows `Checking` at once;
+/// the result arrives later as an ordinary Status delta.
+///
+/// Errors only for something that can't be checked: a list/service that isn't there (or is
+/// disabled), or an endpoint that isn't in that service.
+pub fn check_now(
+    app: &AppHandle,
+    list_id: &str,
+    service_id: &str,
+    endpoint_id: Option<&str>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let (mut service, timeout_ms) = {
+        let cfg = state.config.lock().unwrap();
+        let service = cfg
+            .lists
+            .iter()
+            .find(|l| l.id == list_id)
+            .and_then(|l| l.services.iter().find(|s| s.id == service_id && s.enabled))
+            .cloned()
+            .ok_or("That service isn't being checked")?;
+        (service, cfg.timeout_ms)
+    };
+    if let Some(eid) = endpoint_id {
+        service.endpoints.retain(|e| e.id == eid);
+        if service.endpoints.is_empty() {
+            return Err("That endpoint isn't part of the service".into());
+        }
+    }
+
+    let generation = state.generation.load(Ordering::SeqCst);
+    if !apply_marking(app, list_id, service_id, generation, endpoint_id) {
+        return Err("That service has no status yet".into());
+    }
+
+    let (client, sem) = (state.probe_client.clone(), state.probe_sem.clone());
+    let (app, list_id, service_id) = (app.clone(), list_id.to_string(), service_id.to_string());
+    let endpoint_only = endpoint_id.is_some();
+    tauri::async_runtime::spawn(async move {
+        // Probe with NO lock held (network I/O).
+        let fresh = crate::probe::probe_service(&service, &client, &sem, timeout_ms).await;
+        let landed = if endpoint_only {
+            match fresh.endpoints.first() {
+                Some(ep) => apply_derived(&app, &list_id, &service_id, generation, |cur| merge_endpoint(cur, ep)),
+                None => None,
+            }
+        } else {
+            apply_derived(&app, &list_id, &service_id, generation, |_| fresh.clone())
+        };
+        if let Some((overall, cut_off)) = landed {
+            crate::tray::update_icon(&app, overall, cut_off);
+        }
+    });
+    Ok(())
+}
+
+/// The ids of the services in `list_id` that are being checked (enabled ones), in order. `None` for
+/// a list that isn't there. Pure, so "which services does a list check cover" is testable.
+pub fn enabled_service_ids(cfg: &crate::models::Config, list_id: &str) -> Option<Vec<String>> {
+    let list = cfg.lists.iter().find(|l| l.id == list_id)?;
+    Some(list.services.iter().filter(|s| s.enabled).map(|s| s.id.clone()).collect())
+}
+
+/// Re-check every service of one list now, leaving all other lists alone. Each service shows
+/// `Checking` at once and lands its own result, exactly like `check_now`.
+pub fn check_list_now(app: &AppHandle, list_id: &str) -> Result<(), String> {
+    let ids = {
+        let state = app.state::<AppState>();
+        let cfg = state.config.lock().unwrap();
+        enabled_service_ids(&cfg, list_id).ok_or("That list isn't there")?
+    };
+    // One service that can't be checked (removed a moment ago) must not stop the rest.
+    for id in ids {
+        let _ = check_now(app, list_id, &id, None);
+    }
+    Ok(())
 }
 
 /// Apply a probe result only if it belongs to the live task generation. `abort()` lands only at an
@@ -327,11 +516,11 @@ pub fn spawn_wan_task(app: &AppHandle) {
                 guard.as_mut().map(|snap| {
                     snap.wan = wan;
                     let _ = app.emit(EVENT_STATUS, &*snap);
-                    snap.overall
+                    (snap.overall, snap.cut_off)
                 })
             };
-            if let Some(overall) = overall {
-                crate::tray::update_icon(&app, overall);
+            if let Some((overall, cut_off)) = overall {
+                crate::tray::update_icon(&app, overall, cut_off);
             }
 
             // Refresh on schedule; retry sooner after a failed fetch; wake on manual refresh or
@@ -457,6 +646,155 @@ mod tests {
         // Written back into the snapshot too.
         assert!(snap.lists[0].all_down);
         assert_eq!(snap.overall, Severity::Red);
+    }
+
+    // ----- one-off checks -----
+
+    /// (state, latency) of each endpoint — `EndpointStatus` has no `==`, and these are what matter.
+    fn shape(s: &ServiceStatus) -> Vec<(ServiceState, Option<u64>)> {
+        s.endpoints.iter().map(|e| (e.state, e.latency_ms)).collect()
+    }
+
+    /// A group: three endpoints, each its own state.
+    fn group(states: &[ServiceState]) -> ServiceStatus {
+        let endpoints: Vec<EndpointStatus> = states
+            .iter()
+            .enumerate()
+            .map(|(i, s)| EndpointStatus {
+                id: format!("e{i}"),
+                host: format!("h{i}"),
+                state: *s,
+                latency_ms: Some(10 + i as u64),
+            })
+            .collect();
+        ServiceStatus {
+            id: "g".into(),
+            label: "Claude".into(),
+            state: worst_state(states),
+            endpoints,
+        }
+    }
+
+    #[test]
+    fn checking_status_marks_the_whole_service_or_one_endpoint() {
+        use ServiceState::*;
+        let g = group(&[Up, Down, Up]);
+
+        let all = checking_status(&g, None);
+        assert!(all.endpoints.iter().all(|e| e.state == Checking && e.latency_ms.is_none()));
+        assert_eq!(all.state, Checking);
+
+        let one = checking_status(&g, Some("e1"));
+        assert_eq!(
+            one.endpoints.iter().map(|e| e.state).collect::<Vec<_>>(),
+            [Up, Checking, Up],
+            "only the asked endpoint goes back to Checking"
+        );
+        assert_eq!(one.endpoints[0].latency_ms, Some(10), "the others keep their latency");
+        assert_eq!(one.state, Checking, "worst-wins: a Checking endpoint makes the group Checking");
+        assert_eq!(one.id, "g");
+        assert_eq!(one.label, "Claude");
+
+        // An unknown endpoint id changes nothing.
+        assert_eq!(shape(&checking_status(&g, Some("nope"))), shape(&g));
+    }
+
+    #[test]
+    fn merge_endpoint_swaps_one_result_in_and_rolls_up_again() {
+        use ServiceState::*;
+        // A group mid-check: e1 is being re-checked, the others are settled.
+        let mid = checking_status(&group(&[Up, Down, Up]), Some("e1"));
+        let fresh = EndpointStatus { id: "e1".into(), host: "h1".into(), state: Up, latency_ms: Some(42) };
+
+        let merged = merge_endpoint(&mid, &fresh);
+        assert_eq!(merged.endpoints[1].state, Up);
+        assert_eq!(merged.endpoints[1].latency_ms, Some(42));
+        assert_eq!(merged.state, Up, "all Up now");
+
+        // …and when it is still Down, the group stays Down.
+        let still = EndpointStatus { id: "e1".into(), host: "h1".into(), state: Down, latency_ms: None };
+        assert_eq!(merge_endpoint(&mid, &still).state, Down);
+
+        // A result for an endpoint that is gone (edited meanwhile) changes nothing.
+        let gone = EndpointStatus { id: "zzz".into(), host: "x".into(), state: Down, latency_ms: None };
+        assert_eq!(shape(&merge_endpoint(&group(&[Up, Up, Up]), &gone)), shape(&group(&[Up, Up, Up])));
+    }
+
+    /// The two steps of a one-off check, on a snapshot: the target shows Checking with every
+    /// rollup left alone, then the real result rolls everything up.
+    #[test]
+    fn a_one_off_check_marks_only_the_target_then_settles() {
+        use ServiceState::*;
+        let mut snap = snap_with(false, vec![group(&[Up, Down, Up]), svc("other", Up)]);
+
+        let marked = mark_checking(&mut snap, "l1", "g", Some("e1")).unwrap();
+        assert_eq!(marked.service.state, Checking);
+        assert_eq!(snap.lists[0].services[0].endpoints[1].state, Checking);
+        assert_eq!(snap.lists[0].services[0].endpoints[0].state, Up, "other hosts untouched");
+        assert_eq!(snap.lists[0].services[1].state, Up, "the other service is untouched");
+        // Nothing global moved: the rest of the app must not look like it is refreshing.
+        assert!(marked.settled && snap.settled, "a local re-check is not an unsettled snapshot");
+        assert_eq!(marked.overall, Severity::Green);
+        assert!(!marked.cut_off && !marked.list_all_down);
+
+        let fresh = EndpointStatus { id: "e1".into(), host: "h1".into(), state: Up, latency_ms: Some(30) };
+        let merged = merge_endpoint(&snap.lists[0].services[0].clone(), &fresh);
+        let landed = recompute_delta(&mut snap, "l1", merged).unwrap();
+        assert_eq!(landed.service.state, Up);
+        assert!(landed.settled);
+        assert_eq!(landed.overall, Severity::Green);
+    }
+
+    /// An offline machine stays "offline" while one site is re-checked (it used to flip to a plain
+    /// alarm for the length of the probe, because a Checking endpoint ends cut-off).
+    #[test]
+    fn a_one_off_check_does_not_lift_cut_off() {
+        use ServiceState::*;
+        let mut snap = snap_with(true, vec![svc("a", Down), svc("b", Down)]);
+        recompute_delta(&mut snap, "l1", svc("a", Down)); // settle the rollups: all down, cut off
+        assert!(snap.cut_off && snap.lists[0].all_down && snap.overall == Severity::Red);
+
+        let marked = mark_checking(&mut snap, "l1", "a", None).unwrap();
+        assert_eq!(marked.service.state, Checking);
+        assert!(marked.cut_off && snap.cut_off, "still offline while it re-checks");
+        assert!(marked.list_all_down && snap.lists[0].all_down);
+        assert_eq!(marked.overall, Severity::Red);
+        assert!(marked.settled);
+    }
+
+    #[test]
+    fn marking_an_unknown_target_does_nothing() {
+        let mut snap = snap_with(false, vec![svc("a", ServiceState::Up)]);
+        assert!(mark_checking(&mut snap, "nope", "a", None).is_none());
+        assert!(mark_checking(&mut snap, "l1", "nope", None).is_none());
+        assert_eq!(snap.lists[0].services[0].state, ServiceState::Up);
+    }
+
+    #[test]
+    fn a_list_check_covers_exactly_its_enabled_services() {
+        use crate::models::{Config, Endpoint, Service};
+        let mut cfg = Config::default();
+        let list = &mut cfg.lists[0];
+        let all_ids: Vec<String> = list.services.iter().map(|s| s.id.clone()).collect();
+        assert!(all_ids.len() >= 2, "the seeded list has several services");
+
+        // Every service enabled → every id, in the list's order.
+        assert_eq!(enabled_service_ids(&cfg, &cfg.lists[0].id), Some(all_ids.clone()));
+
+        // A disabled one is skipped, a newly added one is included.
+        cfg.lists[0].services[0].enabled = false;
+        let mut extra = Service::with_endpoints("Extra", vec![Endpoint::new("example.com", 443)]);
+        extra.enabled = true;
+        let extra_id = extra.id.clone();
+        cfg.lists[0].services.push(extra);
+        let mut want: Vec<String> = all_ids[1..].to_vec();
+        want.push(extra_id);
+        assert_eq!(enabled_service_ids(&cfg, &cfg.lists[0].id), Some(want));
+
+        // Another list is not part of it, and an unknown list is None.
+        let other = cfg.lists[1].id.clone();
+        assert!(enabled_service_ids(&cfg, &other).unwrap().iter().all(|id| !all_ids.contains(id)));
+        assert_eq!(enabled_service_ids(&cfg, "nope"), None);
     }
 
     #[test]
