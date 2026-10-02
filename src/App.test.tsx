@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // Mock the entire api module — every fn returns sensible defaults below
@@ -7,6 +7,8 @@ vi.mock("./api", () => ({
   getSnapshot: vi.fn(),
   getConfig: vi.fn(),
   refreshNow: vi.fn(),
+  checkNow: vi.fn(),
+  checkList: vi.fn(),
   onStatusUpdate: vi.fn(),
   onServiceUpdate: vi.fn(),
   takeNewChangelog: vi.fn(),
@@ -34,6 +36,7 @@ vi.mock("./update", () => ({
 }));
 
 import App from "./App";
+import { setOrbStyle } from "./orbStyle";
 import * as api from "./api";
 import * as update from "./update";
 import type { Config, Snapshot } from "./types";
@@ -80,6 +83,7 @@ const CONFIG: Config = {
   // Independent of the *_sound flags (ADR-0028) — a stored level survives every flag being off.
   notify_volume: 70,
   hide_dock: false,
+  tray_style: "rings",
   last_changelog_version: null,
 };
 
@@ -93,6 +97,8 @@ beforeEach(() => {
   vi.mocked(api.onStatusUpdate).mockResolvedValue(() => {});
   vi.mocked(api.onServiceUpdate).mockResolvedValue(() => {});
   vi.mocked(api.refreshNow).mockResolvedValue();
+  vi.mocked(api.checkNow).mockResolvedValue();
+  vi.mocked(api.checkList).mockResolvedValue();
   vi.mocked(update.checkForUpdate).mockResolvedValue(null);
   vi.mocked(update.downloadUpdate).mockResolvedValue();
   vi.mocked(update.installAndRelaunch).mockResolvedValue();
@@ -143,7 +149,6 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /menu/i }));
     await user.click(screen.getByRole("button", { name: /^settings$/i }));
     await user.click(screen.getByRole("button", { name: /^save$/i }));
 
@@ -157,7 +162,6 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /menu/i }));
     await user.click(screen.getByRole("button", { name: /^settings$/i }));
     await user.click(screen.getByRole("button", { name: /^save$/i }));
 
@@ -206,9 +210,9 @@ describe("App", () => {
 
     await user.click(screen.getByTitle("Collapse"));
     expect(api.setListCollapsed).toHaveBeenCalledWith("internet", true);
-    expect(screen.queryByText("Google")).not.toBeInTheDocument();
+    // The rows leave the DOM once the collapse animation has played.
+    await waitFor(() => expect(screen.queryByText("Google")).not.toBeInTheDocument());
 
-    await user.click(screen.getByRole("button", { name: /menu/i }));
     await user.click(screen.getByRole("button", { name: /edit order/i }));
     await user.click(screen.getByRole("button", { name: /^done$/i }));
     expect(screen.queryByText("Google")).not.toBeInTheDocument();
@@ -223,7 +227,7 @@ describe("App", () => {
     await user.click(screen.getByTitle("List options"));
     const items = screen.getAllByRole("button").filter((b) => b.className.includes("list-dropdown-item"));
     expect(items.map((b) => b.textContent)).toEqual(["Edit", "Edit order", "Delete"]);
-    await user.click(screen.getByRole("button", { name: /^edit order$/i }));
+    await user.click(items[1]);
     expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
     expect(screen.getAllByTitle("Drag to reorder").length).toBeGreaterThan(0);
   });
@@ -248,7 +252,7 @@ describe("App", () => {
         settled: true,
       }),
     );
-    expect(screen.queryByText("Google")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Google")).not.toBeInTheDocument());
     expect(screen.getByTitle("Expand")).toBeInTheDocument();
   });
 
@@ -272,7 +276,6 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /menu/i }));
     await user.click(screen.getByRole("button", { name: /^settings$/i }));
     await user.click(screen.getByRole("button", { name: /^save$/i }));
 
@@ -287,7 +290,6 @@ describe("App", () => {
   // checking from Settings (or the reverse) could re-download or install a different release.
   describe("updates have one owner", () => {
     async function openSettings(user: ReturnType<typeof userEvent.setup>) {
-      await user.click(screen.getByRole("button", { name: /menu/i }));
       await user.click(screen.getByRole("button", { name: /^settings$/i }));
     }
 
@@ -337,6 +339,334 @@ describe("App", () => {
     });
   });
 
+  it("the hero mood follows the snapshot: calm when all is well, offline when cut off", async () => {
+    const { container, unmount } = render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+    expect(container.querySelector(".hero")).toHaveClass("hero-ok");
+    unmount();
+
+    vi.mocked(api.getSnapshot).mockResolvedValue({ ...SNAPSHOT, overall: "red", cut_off: true });
+    const second = render(<App />);
+    expect(await screen.findByText("You're offline")).toBeInTheDocument();
+    expect(second.container.querySelector(".hero")).toHaveClass("hero-offline");
+  });
+
+  it("Add list and Edit order sit under the lists; Edit order hides them until Done", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+
+    await user.click(screen.getByRole("button", { name: /^add list$/i }));
+    expect(screen.getByRole("heading", { name: /list/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    await user.click(screen.getByRole("button", { name: /^edit order$/i }));
+    expect(screen.queryByRole("button", { name: /^add list$/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^done$/i }));
+    expect(screen.getByRole("button", { name: /^add list$/i })).toBeInTheDocument();
+  });
+
+  it("each Settings card is a named group with its heading first", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+
+    for (const name of ["Appearance", "Config", /^IP providers/, /^Probe interval/, /^Critical-list alerts/, "System"]) {
+      const group = screen.getByRole("group", { name });
+      expect(group.firstElementChild).toHaveClass("settings-card-title");
+    }
+  });
+
+  describe("status icon style (Rings / Pulse)", () => {
+    afterEach(() => setOrbStyle("rings")); // the choice is module-level state; don't leak it
+
+    it("defaults to Rings and Pulse swaps the hero orb's icon", async () => {
+      const user = userEvent.setup();
+      const { container } = render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      expect(container.querySelector(".status-orb .orb-icon")).toHaveClass("orb-icon-rings");
+
+      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      const group = within(screen.getByRole("radiogroup", { name: "Status icon" }));
+      expect(group.getByRole("radio", { name: /rings/i })).toHaveAttribute("aria-checked", "true");
+      await user.click(group.getByRole("radio", { name: /pulse/i }));
+
+      expect(group.getByRole("radio", { name: /pulse/i })).toHaveAttribute("aria-checked", "true");
+      const orb = container.querySelector(".status-orb .orb-icon");
+      expect(orb).toHaveClass("orb-icon-pulse");
+      // Calm = a trace with a sweep running along it.
+      expect(orb?.querySelector(".pulse-base")).not.toBeNull();
+      expect(orb?.querySelector(".pulse-sweep")).not.toBeNull();
+      expect(localStorage.getItem("qanary-orb-style")).toBe("pulse");
+    });
+
+    it("is one smooth gradient line with a light that runs along the wave and drags a fading tail", async () => {
+      setOrbStyle("pulse");
+      const { container } = render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      const icon = container.querySelector(".status-orb .orb-icon")!;
+      expect(icon.querySelectorAll(".pulse-base")).toHaveLength(1); // one line, not pieces
+      const base = icon.querySelector(".pulse-base")!;
+      expect(base.getAttribute("stroke")).toMatch(/^url\(#.+-fade\)$/);
+
+      // The light: a few soft dots on one group, shown only where the line is.
+      const sweep = icon.querySelector(".pulse-sweep")!;
+      expect(sweep.getAttribute("mask")).toMatch(/^url\(#.+-line\)$/);
+      const dots = Array.from(sweep.querySelectorAll("circle"));
+      expect(dots.length).toBeGreaterThanOrEqual(5);
+      dots.forEach((c) => expect(c.getAttribute("fill")).toMatch(/^url\(#.+-glow\)$/));
+
+      // Every dot rides the heartbeat's own path (so it follows the wave, not straight across) —
+      // with a runway of empty air at each end, so it slides in from beyond the left end and out
+      // past the right one instead of stopping on the line.
+      const motions = dots.map((c) => c.querySelector("animateMotion")!);
+      const line = base.getAttribute("d")!;
+      motions.forEach((m) => {
+        expect(m.getAttribute("path")).toContain(line.slice(1)); // the whole line, in order…
+        expect(m.getAttribute("path")!.startsWith("M")).toBe(true);
+        expect(m.getAttribute("path")).not.toBe(line); // …plus the runway either side
+        expect(m.getAttribute("repeatCount")).toBe("indefinite");
+      });
+      const xs = (d: string) => Array.from(d.matchAll(/[ML](-?[\d.]+) /g)).map((x) => Number(x[1]));
+      const lineX = xs(line);
+      const runX = xs(motions[0].getAttribute("path")!);
+      expect(runX[0]).toBeLessThan(lineX[0]); // starts left of the line
+      expect(runX[runX.length - 1]).toBeGreaterThan(lineX[lineX.length - 1]); // ends right of it
+      // …the tail: the dots are drawn tail-first, so each later one is the head-ward one — it is
+      // brighter, bigger and starts sooner than the one before it.
+      const opacity = dots.map((c) => Number(c.getAttribute("opacity")));
+      const radius = dots.map((c) => Number(c.getAttribute("r")));
+      const begin = motions.map((m) => parseFloat(m.getAttribute("begin")!));
+      for (let i = 1; i < dots.length; i++) {
+        expect(opacity[i]).toBeGreaterThan(opacity[i - 1]);
+        expect(radius[i]).toBeGreaterThan(radius[i - 1]);
+        expect(begin[i]).toBeLessThan(begin[i - 1]);
+      }
+      expect(opacity[dots.length - 1]).toBe(1);
+      expect(begin[dots.length - 1]).toBe(0); // the head starts at once
+
+      // Natural pacing: steady along the flat stretches, faster through the beat, and then it is
+      // gone — it ends beyond the line and rests there, out of sight, for the rest of the cycle.
+      const kp = motions[0].getAttribute("keyPoints")!.split(";").map(Number);
+      const kt = motions[0].getAttribute("keyTimes")!.split(";").map(Number);
+      expect(kp).toHaveLength(kt.length);
+      expect(kp[0]).toBe(0);
+      expect(kp[kp.length - 1]).toBe(1);
+      expect(kp[kp.length - 2]).toBe(1); // it has left the line…
+      expect(kt[kt.length - 2]).toBeLessThan(1); // …and then waits (the rest)
+      expect(kt[kt.length - 1]).toBe(1);
+      const speed = (i: number) => (kp[i + 1] - kp[i]) / (kt[i + 1] - kt[i]);
+      expect(speed(1)).toBeGreaterThan(speed(0) * 1.2); // the beat is faster than the lead-in…
+      expect(speed(1)).toBeGreaterThan(speed(2) * 1.2); // …and than the lead-out
+      expect(speed(2)).toBeGreaterThan(speed(0) * 0.8); // which does not crawl: no slow-down at the end
+      expect(speed(2)).toBeLessThan(speed(0) * 1.25);
+
+      // The line fades at its ends (clear → solid → clear).
+      const fade = Array.from(icon.querySelectorAll("linearGradient")).find((g) => g.id.endsWith("-fade"))!;
+      const stops = Array.from(fade.querySelectorAll("stop")).map((st) => st.getAttribute("stop-opacity"));
+      expect(stops[0]).toBe("0");
+      expect(stops[stops.length - 1]).toBe("0");
+      expect(stops).toContain("1");
+    });
+
+    it("gives every Pulse icon its own gradient ids (hero orb and Settings sample)", async () => {
+      const user = userEvent.setup();
+      setOrbStyle("pulse");
+      const { baseElement } = render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      const ids = Array.from(baseElement.querySelectorAll("linearGradient, radialGradient, mask")).map((e) => e.id);
+      expect(ids.length).toBeGreaterThan(3);
+      expect(new Set(ids).size).toBe(ids.length); // no id appears twice in the document
+    });
+
+    it("with reduced motion the line stays and the glide is not rendered", async () => {
+      vi.stubGlobal("matchMedia", (q: string) => ({
+        matches: q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {},
+        addListener() {}, removeListener() {}, dispatchEvent: () => false, onchange: null,
+      }));
+      setOrbStyle("pulse");
+      const { container } = render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      const icon = container.querySelector(".status-orb .orb-icon")!;
+      expect(icon.querySelector(".pulse-base")).not.toBeNull();
+      expect(icon.querySelector(".pulse-sweep")).toBeNull();
+      expect(icon.querySelector("animateMotion")).toBeNull();
+      vi.unstubAllGlobals();
+    });
+
+    it("draws the alarm as a flat line with an X, and offline as the line struck through", async () => {
+      setOrbStyle("pulse");
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...SNAPSHOT,
+        overall: "red",
+        lists: [{ ...SNAPSHOT.lists[0], critical: true, all_down: true,
+          services: [{ ...SNAPSHOT.lists[0].services[0], state: "down",
+            endpoints: [{ id: "e1", host: "google.com", state: "down", latency_ms: null }] }] }],
+      });
+      const alarm = render(<App />);
+      await screen.findByText("Something’s wrong");
+      const icon = alarm.container.querySelector(".status-orb .orb-icon");
+      expect(icon?.querySelector(".pulse-flat")).not.toBeNull();
+      expect(icon?.querySelector(".pulse-x")).not.toBeNull();
+      alarm.unmount();
+
+      vi.mocked(api.getSnapshot).mockResolvedValue({ ...SNAPSHOT, overall: "red", cut_off: true });
+      const offline = render(<App />);
+      await screen.findByText("You're offline");
+      const off = offline.container.querySelector(".status-orb .orb-icon");
+      expect(off?.querySelector(".pulse-flat")).not.toBeNull();
+      expect(off?.querySelector(".pulse-x")).toBeNull();
+    });
+  });
+
+  describe("the hero while probes are in flight", () => {
+    it("re-checking one site (one row Checking, snapshot still settled) leaves the hero as it was", async () => {
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...SNAPSHOT,
+        settled: true,
+        lists: [
+          {
+            ...SNAPSHOT.lists[0],
+            services: [
+              SNAPSHOT.lists[0].services[0],
+              { id: "s2", label: "Telegram", state: "checking", endpoints: [{ id: "e2", host: "t.me", state: "checking", latency_ms: null }] },
+            ],
+          },
+        ],
+      });
+      const { container } = render(<App />);
+      await screen.findByText("Telegram");
+      expect(screen.getByText("All clear")).toBeInTheDocument(); // not "Checking…"
+      expect(container.querySelector(".hero")).toHaveClass("hero-ok");
+      expect(container.querySelector(".hero")).not.toHaveClass("hero-busy");
+      expect(container.querySelector(".status-orb")).not.toHaveClass("status-orb-busy");
+      expect(screen.getByText(/pinging/i)).toBeInTheDocument(); // only the row says so
+    });
+
+    it("an unsettled snapshot (a full round in flight) is busy: gray, pulsing", async () => {
+      vi.mocked(api.getSnapshot).mockResolvedValue({
+        ...SNAPSHOT,
+        settled: false,
+        lists: [
+          {
+            ...SNAPSHOT.lists[0],
+            services: [
+              SNAPSHOT.lists[0].services[0],
+              { id: "s2", label: "Telegram", state: "checking", endpoints: [{ id: "e2", host: "t.me", state: "checking", latency_ms: null }] },
+            ],
+          },
+        ],
+      });
+      const { container } = render(<App />);
+      await screen.findByText("Telegram");
+      expect(container.querySelector(".hero")).toHaveClass("hero-busy");
+      expect(container.querySelector(".status-orb")).toHaveClass("status-orb-busy");
+    });
+  });
+
+  describe("menu bar icon style (four looks)", () => {
+    afterEach(() => setOrbStyle("rings"));
+
+    async function openSettings() {
+      const user = userEvent.setup();
+      render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      return { user, group: within(screen.getByRole("radiogroup", { name: "Menu bar icon" })) };
+    }
+
+    it("offers four looks, the saved one selected, separate from the in-app status icon", async () => {
+      const { group } = await openSettings();
+      const names = ["Rings", "Pulse", "Filled rings", "Filled pulse"];
+      expect(group.getAllByRole("radio").map((r) => r.textContent)).toEqual(names);
+      expect(group.getByRole("radio", { name: "Rings" })).toHaveAttribute("aria-checked", "true");
+      for (const n of names.slice(1)) {
+        expect(group.getByRole("radio", { name: n })).toHaveAttribute("aria-checked", "false");
+      }
+      expect(screen.getByRole("radiogroup", { name: "Status icon" })).toBeInTheDocument();
+    });
+
+    it("shows every look in every state it can take, small", async () => {
+      const { group } = await openSettings();
+      for (const radio of group.getAllByRole("radio")) {
+        const icons = Array.from(radio.querySelectorAll("svg.tray-icon"));
+        expect(icons.map((i) => i.getAttribute("data-mood"))).toEqual([
+          "ok", "warn", "alarm", "offline", "busy",
+        ]);
+      }
+    });
+
+    it("is saved with the rest of the form and leaves the in-app icon alone", async () => {
+      vi.mocked(api.updateSettings).mockResolvedValue({ ...CONFIG, tray_style: "pulse-filled" });
+      const { user, group } = await openSettings();
+      await user.click(group.getByRole("radio", { name: "Filled pulse" }));
+      expect(group.getByRole("radio", { name: "Filled pulse" })).toHaveAttribute("aria-checked", "true");
+      // Nothing is written until Save — the backend draws the icon, so it is a config setting.
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      expect(localStorage.getItem("qanary-orb-style")).not.toBe("pulse");
+
+      await user.click(screen.getByRole("button", { name: /^save$/i }));
+      await waitFor(() =>
+        expect(api.updateSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ tray_style: "pulse-filled" }),
+        ),
+      );
+    });
+
+    it("Cancel discards a pending choice", async () => {
+      const { user, group } = await openSettings();
+      await user.click(group.getByRole("radio", { name: "Filled rings" }));
+      await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+      expect(api.updateSettings).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      const again = within(screen.getByRole("radiogroup", { name: "Menu bar icon" }));
+      expect(again.getByRole("radio", { name: "Rings" })).toHaveAttribute("aria-checked", "true");
+    });
+  });
+
+  // Theme + "Reset to defaults" moved from the old hero menu into Settings; same behavior.
+  describe("Settings keeps the Theme and Reset to defaults controls", () => {
+    it("Theme cycles System → Light → Dark", async () => {
+      const user = userEvent.setup();
+      render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+
+      await user.click(screen.getByRole("button", { name: /theme: system/i }));
+      expect(screen.getByRole("button", { name: /theme: light/i })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: /theme: light/i }));
+      expect(screen.getByRole("button", { name: /theme: dark/i })).toBeInTheDocument();
+    });
+
+    it("Reset asks first; Cancel backs out without resetting", async () => {
+      const user = userEvent.setup();
+      render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+
+      await user.click(screen.getByRole("button", { name: /reset to defaults/i }));
+      expect(screen.getByText("Reset to defaults?")).toBeInTheDocument();
+      await user.click(screen.getAllByRole("button", { name: /^cancel$/i })[0]);
+      expect(api.resetConfig).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: /reset to defaults/i })).toBeInTheDocument();
+    });
+
+    it("confirming the reset calls api.resetConfig", async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.resetConfig).mockReturnValue(new Promise(() => {}));
+      render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+
+      await user.click(screen.getByRole("button", { name: /reset to defaults/i }));
+      await user.click(screen.getByRole("button", { name: /yes, reset/i }));
+      expect(api.resetConfig).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("refresh button calls api.refreshNow", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -348,20 +678,13 @@ describe("App", () => {
     expect(api.refreshNow).toHaveBeenCalled();
   });
 
-  it("settings menu item opens settings panel", async () => {
+  it("settings button opens settings panel", async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    // Open the menu dropdown
-    const menuBtn = screen.getByRole("button", { name: /menu/i });
-    await user.click(menuBtn);
+    await user.click(screen.getByRole("button", { name: /^settings$/i }));
 
-    // Click the Settings item in the dropdown
-    const settingsItem = screen.getByRole("button", { name: /^settings$/i });
-    await user.click(settingsItem);
-
-    // Settings panel should be visible
     expect(screen.getByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
   });
 
@@ -370,8 +693,6 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    // Open menu → Settings
-    await user.click(screen.getByRole("button", { name: /menu/i }));
     await user.click(screen.getByRole("button", { name: /^settings$/i }));
 
     // Config card legend and both buttons must be rendered
@@ -388,7 +709,6 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /menu/i }));
     await user.click(screen.getByRole("button", { name: /^settings$/i }));
     await user.click(screen.getByRole("button", { name: /export/i }));
 
@@ -406,7 +726,6 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /menu/i }));
     await user.click(screen.getByRole("button", { name: /^settings$/i }));
     await user.click(screen.getByRole("button", { name: /import/i }));
 
@@ -425,11 +744,10 @@ describe("App", () => {
   // The volume and the three Sound flags are independent (ADR-0028): the slider is a level,
   // not a fourth mute switch. Only "no direction makes a sound" makes the level inapplicable.
   describe("notification volume slider (independent of the Sound flags)", () => {
-    /** Open menu → Settings and return the slider + the three Sound checkboxes. */
+    /** Open Settings and return the slider + the three Sound checkboxes. */
     async function openAlertSettings(user: ReturnType<typeof userEvent.setup>) {
       render(<App />);
       await waitFor(() => screen.getByText("All clear"));
-      await user.click(screen.getByRole("button", { name: /menu/i }));
       await user.click(screen.getByRole("button", { name: /^settings$/i }));
       return {
         slider: screen.getByLabelText(/sound volume/i) as HTMLInputElement,
@@ -498,6 +816,404 @@ describe("App", () => {
           blocked_sound: true,
         }),
       );
+    });
+  });
+
+  describe("list modal", () => {
+    it("the Critical switch toggles and is saved with the list", async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.addList).mockResolvedValue(CONFIG);
+      render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+
+      await user.click(screen.getByRole("button", { name: /^add list$/i }));
+      const critical = screen.getByRole("switch", { name: /critical/i });
+      expect(critical).toHaveAttribute("aria-checked", "false");
+      await user.type(screen.getByLabelText("Name"), "Work");
+      await user.click(critical);
+      expect(critical).toHaveAttribute("aria-checked", "true");
+      await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+      expect(api.addList).toHaveBeenCalledWith("Work", "", true);
+    });
+
+    it("Cancel closes without saving", async () => {
+      const user = userEvent.setup();
+      render(<App />);
+      await waitFor(() => screen.getByText("All clear"));
+      await user.click(screen.getByRole("button", { name: /^add list$/i }));
+      await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+      expect(api.addList).not.toHaveBeenCalled();
+      expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("list and row design", () => {
+    const ep = (id: string, host: string, state: Snapshot["lists"][0]["services"][0]["state"]) => ({
+      id,
+      host,
+      state,
+      latency_ms: state === "up" ? 42 : null,
+    });
+    const snapWith = (list: Partial<Snapshot["lists"][0]>): Snapshot => ({
+      ...SNAPSHOT,
+      lists: [{ ...SNAPSHOT.lists[0], ...list }],
+    });
+
+    it("shows how many services are up, and the first letter as the tile", async () => {
+      render(<App />);
+      await waitFor(() => screen.getByText("Google"));
+      expect(screen.getByText("1/1")).toBeInTheDocument();
+      expect(screen.getByText("G")).toBeInTheDocument();
+    });
+
+    it("a Critical list wears the badge; it turns urgent only when the list is down", async () => {
+      vi.mocked(api.getSnapshot).mockResolvedValue(snapWith({ critical: true }));
+      const first = render(<App />);
+      await waitFor(() => screen.getByText("Critical"));
+      expect(first.container.querySelector(".crit-pill")).not.toHaveClass("crit-pill-down");
+      first.unmount();
+
+      const down = snapWith({
+        critical: true,
+        all_down: true,
+        services: [{ ...SNAPSHOT.lists[0].services[0], state: "down", endpoints: [ep("e1", "google.com", "down")] }],
+      });
+      vi.mocked(api.getSnapshot).mockResolvedValue(down);
+      const second = render(<App />);
+      await waitFor(() => screen.getByText("Critical"));
+      expect(second.container.querySelector(".crit-pill")).toHaveClass("crit-pill-down");
+    });
+
+    it("a fully-down list says All unreachable in place of the count", async () => {
+      vi.mocked(api.getSnapshot).mockResolvedValue(
+        snapWith({
+          all_down: true,
+          services: [{ ...SNAPSHOT.lists[0].services[0], state: "down", endpoints: [ep("e1", "google.com", "down")] }],
+        }),
+      );
+      render(<App />);
+      expect(await screen.findByText("All unreachable")).toBeInTheDocument();
+      expect(screen.queryByText("0/1")).not.toBeInTheDocument();
+      // The state is also boxed on the row itself.
+      expect(screen.getByText("Down")).toBeInTheDocument();
+    });
+
+    it("boxes Blocked on the row", async () => {
+      vi.mocked(api.getSnapshot).mockResolvedValue(
+        snapWith({
+          services: [{ ...SNAPSHOT.lists[0].services[0], state: "blocked", endpoints: [ep("e1", "x.com", "blocked")] }],
+        }),
+      );
+      render(<App />);
+      expect(await screen.findByText("Blocked")).toBeInTheDocument();
+    });
+
+    it("a multi-endpoint row summarizes its endpoints and expands on click", async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.getSnapshot).mockResolvedValue(
+        snapWith({
+          services: [
+            {
+              id: "g",
+              label: "Google",
+              state: "up",
+              endpoints: [ep("a", "google.com", "up"), ep("b", "www.gstatic.com", "up"), ep("c", "bad.example", "down")],
+            },
+          ],
+        }),
+      );
+      render(<App />);
+      await waitFor(() => screen.getByText("Google"));
+      expect(screen.getByTitle("2 up")).toBeInTheDocument();
+      expect(screen.getByTitle("1 down")).toBeInTheDocument();
+      expect(screen.queryByText("www.gstatic.com")).not.toBeInTheDocument();
+
+      // The row (here its endpoint summary) expands the group; the name re-checks it instead.
+      await user.click(screen.getByTitle("2 up"));
+      expect(screen.getByText("www.gstatic.com")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /collapse endpoints/i })).toHaveAttribute("aria-expanded", "true");
+
+      await user.click(screen.getByRole("button", { name: /collapse endpoints/i }));
+      await waitFor(() => expect(screen.queryByText("www.gstatic.com")).not.toBeInTheDocument());
+    });
+
+    describe("clicking a name re-checks just that", () => {
+      const group = () =>
+        snapWith({
+          services: [
+            {
+              id: "g",
+              label: "Claude",
+              state: "up",
+              endpoints: [ep("a", "claude.ai", "up"), ep("b", "api.anthropic.com", "up"), ep("c", "console.anthropic.com", "up")],
+            },
+          ],
+        });
+
+      it("a single site: its name re-checks only that service", async () => {
+        const user = userEvent.setup();
+        render(<App />);
+        await waitFor(() => screen.getByText("Google"));
+        await user.click(screen.getByRole("button", { name: "Google" }));
+        expect(api.checkNow).toHaveBeenCalledTimes(1);
+        expect(api.checkNow).toHaveBeenCalledWith("internet", "s1", undefined);
+        expect(api.refreshNow).not.toHaveBeenCalled(); // not a full refresh
+      });
+
+      it("a group: its name re-checks the whole group and does not expand it", async () => {
+        const user = userEvent.setup();
+        vi.mocked(api.getSnapshot).mockResolvedValue(group());
+        render(<App />);
+        await waitFor(() => screen.getByText("Claude"));
+        const name = screen.getByRole("button", { name: "Claude" });
+        expect(name).toHaveAttribute("title", "Check all 3 hosts now");
+
+        await user.click(name);
+        expect(api.checkNow).toHaveBeenCalledWith("internet", "g", undefined); // no endpoint = all
+        expect(screen.queryByText("api.anthropic.com")).not.toBeInTheDocument(); // stayed collapsed
+      });
+
+      it("an opened group: a host re-checks only that host", async () => {
+        const user = userEvent.setup();
+        vi.mocked(api.getSnapshot).mockResolvedValue(group());
+        render(<App />);
+        await waitFor(() => screen.getByText("Claude"));
+        await user.click(screen.getByRole("button", { name: /expand endpoints/i }));
+
+        await user.click(screen.getByRole("button", { name: "api.anthropic.com" }));
+        expect(api.checkNow).toHaveBeenCalledTimes(1);
+        expect(api.checkNow).toHaveBeenCalledWith("internet", "g", "b");
+        // …and the group stays open.
+        expect(screen.getByText("console.anthropic.com")).toBeInTheDocument();
+      });
+
+      it("does nothing while that service is already being checked", async () => {
+        const user = userEvent.setup();
+        vi.mocked(api.getSnapshot).mockResolvedValue(
+          snapWith({
+            services: [{ ...SNAPSHOT.lists[0].services[0], state: "checking", endpoints: [ep("e1", "google.com", "checking")] }],
+          }),
+        );
+        render(<App />);
+        await waitFor(() => screen.getByText("Google"));
+        await user.click(screen.getByRole("button", { name: "Google" }));
+        expect(api.checkNow).not.toHaveBeenCalled();
+      });
+
+      it("a closed group shows ~average latency of the hosts that answered; open, it hides it", async () => {
+        const user = userEvent.setup();
+        const e = (id: string, host: string, state: "up" | "down", ms: number | null) => ({
+          id, host, state, latency_ms: ms,
+        });
+        vi.mocked(api.getSnapshot).mockResolvedValue(
+          snapWith({
+            services: [
+              {
+                id: "g",
+                label: "Claude",
+                state: "down",
+                endpoints: [e("a", "claude.ai", "up", 30), e("b", "api.anthropic.com", "up", 32), e("c", "console.anthropic.com", "up", 200), e("d", "old.example", "down", null)],
+              },
+            ],
+          }),
+        );
+        render(<App />);
+        await waitFor(() => screen.getByText("Claude"));
+        const avg = screen.getByText("~87 ms"); // (30 + 32 + 200) / 3; the down host is not counted
+        expect(avg).toHaveAttribute(
+          "title",
+          "Average of 3 of 4 hosts that answered · fastest 30 ms · slowest 200 ms",
+        );
+
+        await user.click(screen.getByRole("button", { name: /expand endpoints/i }));
+        expect(screen.queryByText("~87 ms")).not.toBeInTheDocument();
+        expect(screen.getByText("200 ms")).toBeInTheDocument(); // each host shows its own instead
+      });
+
+      it("a closed group with no answering host shows no average; a checking one shows Pinging…", async () => {
+        const down = (id: string, host: string) => ({ id, host, state: "down" as const, latency_ms: null });
+        vi.mocked(api.getSnapshot).mockResolvedValue(
+          snapWith({
+            services: [{ id: "g", label: "Claude", state: "down", endpoints: [down("a", "a.com"), down("b", "b.com")] }],
+          }),
+        );
+        const first = render(<App />);
+        await waitFor(() => screen.getByText("Claude"));
+        expect(screen.queryByText(/~\d+ ms/)).not.toBeInTheDocument();
+        first.unmount();
+
+        vi.mocked(api.getSnapshot).mockResolvedValue(
+          snapWith({
+            services: [
+              {
+                id: "g",
+                label: "Claude",
+                state: "checking",
+                endpoints: [{ id: "a", host: "a.com", state: "up", latency_ms: 40 }, { id: "b", host: "b.com", state: "checking", latency_ms: null }],
+              },
+            ],
+          }),
+        );
+        render(<App />);
+        await waitFor(() => screen.getByText(/pinging/i));
+        expect(screen.queryByText(/~\d+ ms/)).not.toBeInTheDocument(); // not a stale average mid-check
+      });
+
+      it("shows Pinging… with three dots while a service is being checked", async () => {
+        const { container, unmount } = render(<App />);
+        await waitFor(() => screen.getByText("Google"));
+        expect(screen.queryByText(/pinging/i)).not.toBeInTheDocument();
+        expect(screen.getByText("20 ms")).toBeInTheDocument();
+        unmount();
+
+        vi.mocked(api.getSnapshot).mockResolvedValue(
+          snapWith({
+            services: [{ ...SNAPSHOT.lists[0].services[0], state: "checking", endpoints: [ep("e1", "google.com", "checking")] }],
+          }),
+        );
+        const checking = render(<App />);
+        await waitFor(() => screen.getByText(/pinging/i));
+        expect(checking.container.querySelectorAll(".row .ping-dots i")).toHaveLength(3);
+        expect(screen.queryByText(/ms$/)).not.toBeInTheDocument(); // the latency steps aside
+        expect(container).toBeDefined();
+      });
+
+      it("in a group, Pinging… marks the group and only the host being checked", async () => {
+        const user = userEvent.setup();
+        vi.mocked(api.getSnapshot).mockResolvedValue(
+          snapWith({
+            services: [
+              {
+                id: "g",
+                label: "Claude",
+                state: "checking", // worst-wins: one host in flight makes the group "checking"
+                endpoints: [ep("a", "claude.ai", "up"), ep("b", "api.anthropic.com", "checking"), ep("c", "console.anthropic.com", "up")],
+              },
+            ],
+          }),
+        );
+        const { container } = render(<App />);
+        await waitFor(() => screen.getByText("Claude"));
+        expect(container.querySelectorAll(".row-pinging")).toHaveLength(1); // the group row
+
+        await user.click(screen.getByRole("button", { name: /expand endpoints/i }));
+        // Group row + the one host in flight; the other two hosts keep their normal look.
+        expect(container.querySelectorAll(".row-pinging")).toHaveLength(2);
+        const rows = Array.from(container.querySelectorAll(".endpoint-row"));
+        expect(rows.map((r) => r.querySelector(".row-pinging") !== null)).toEqual([false, true, false]);
+      });
+
+      it("a group's other host can still be checked while one host is being checked", async () => {
+        const user = userEvent.setup();
+        const e = (id: string, host: string, state: "up" | "checking") => ({
+          id, host, state, latency_ms: state === "up" ? 30 : null,
+        });
+        vi.mocked(api.getSnapshot).mockResolvedValue(
+          snapWith({
+            services: [{ id: "g", label: "Claude", state: "checking", endpoints: [e("a", "claude.ai", "up"), e("b", "api.anthropic.com", "checking")] }],
+          }),
+        );
+        render(<App />);
+        await waitFor(() => screen.getByText("Claude"));
+        await user.click(screen.getByRole("button", { name: /expand endpoints/i }));
+
+        await user.click(screen.getByRole("button", { name: "api.anthropic.com" })); // in flight: ignored
+        expect(api.checkNow).not.toHaveBeenCalled();
+        await user.click(screen.getByRole("button", { name: "claude.ai" })); // not in flight: allowed
+        expect(api.checkNow).toHaveBeenCalledWith("internet", "g", "a");
+        // The group name still works too, until every host is in flight.
+        await user.click(screen.getByRole("button", { name: "Claude" }));
+        expect(api.checkNow).toHaveBeenLastCalledWith("internet", "g", undefined);
+      });
+
+      it("clicking a list name while every service of it is being checked does nothing", async () => {
+        const user = userEvent.setup();
+        vi.mocked(api.getSnapshot).mockResolvedValue(
+          snapWith({
+            services: [{ ...SNAPSHOT.lists[0].services[0], state: "checking", endpoints: [ep("e1", "google.com", "checking")] }],
+          }),
+        );
+        const { container } = render(<App />);
+        await waitFor(() => screen.getByText("Google"));
+        await user.click(container.querySelector(".list-name")!);
+        expect(api.checkList).not.toHaveBeenCalled();
+      });
+
+      it("a failed check is reported", async () => {
+        const user = userEvent.setup();
+        vi.mocked(api.checkNow).mockRejectedValue("That service isn't being checked");
+        render(<App />);
+        await waitFor(() => screen.getByText("Google"));
+        await user.click(screen.getByRole("button", { name: "Google" }));
+        expect(await screen.findByRole("alert")).toHaveTextContent("isn't being checked");
+      });
+
+      it("a list name re-checks every service of that list, and nothing else", async () => {
+        const user = userEvent.setup();
+        const { container } = render(<App />);
+        await waitFor(() => screen.getByText("Google"));
+        const chip = container.querySelector(".list-name")!;
+        expect(chip.querySelector("h2")).toHaveAttribute("title", expect.stringContaining("check the whole list"));
+
+        await user.click(chip); // anywhere on the chip, not only on the text
+        expect(api.checkList).toHaveBeenCalledTimes(1);
+        expect(api.checkList).toHaveBeenCalledWith("internet");
+        expect(api.checkNow).not.toHaveBeenCalled();
+        expect(api.refreshNow).not.toHaveBeenCalled();
+      });
+
+      it("the list name is also reachable from the keyboard", async () => {
+        const user = userEvent.setup();
+        render(<App />);
+        await waitFor(() => screen.getByText("Google"));
+        screen.getByRole("button", { name: "Internet" }).focus();
+        await user.keyboard("{Enter}");
+        expect(api.checkList).toHaveBeenCalledTimes(1);
+      });
+
+      it("a failed list check is reported", async () => {
+        const user = userEvent.setup();
+        vi.mocked(api.checkList).mockRejectedValue("That list isn't there");
+        render(<App />);
+        await waitFor(() => screen.getByText("Google"));
+        await user.click(screen.getByRole("button", { name: "Internet" }));
+        expect(await screen.findByRole("alert")).toHaveTextContent("isn't there");
+      });
+
+      it("in reorder mode names are plain text, not buttons", async () => {
+        const user = userEvent.setup();
+        render(<App />);
+        await waitFor(() => screen.getByText("Google"));
+        expect(screen.getByRole("button", { name: "Google" })).toBeInTheDocument();
+        await user.click(screen.getByRole("button", { name: /edit order/i }));
+        expect(screen.queryByRole("button", { name: "Google" })).not.toBeInTheDocument();
+        expect(screen.getByText("Google")).toBeInTheDocument();
+        // The list name is plain text then, too (the grip drags it).
+        expect(screen.queryByRole("button", { name: "Internet" })).not.toBeInTheDocument();
+        expect(screen.getByText("Internet")).toBeInTheDocument();
+      });
+    });
+
+    it("opening the ⋮ menu of a multi-endpoint row does not expand it", async () => {
+      const user = userEvent.setup();
+      vi.mocked(api.getSnapshot).mockResolvedValue(
+        snapWith({
+          services: [
+            {
+              id: "g",
+              label: "Google",
+              state: "up",
+              endpoints: [ep("a", "google.com", "up"), ep("b", "www.gstatic.com", "up")],
+            },
+          ],
+        }),
+      );
+      render(<App />);
+      await waitFor(() => screen.getByText("Google"));
+      await user.click(screen.getByTitle("Service options"));
+      expect(screen.getByRole("button", { name: /^edit$/i })).toBeInTheDocument();
+      expect(screen.queryByText("www.gstatic.com")).not.toBeInTheDocument();
     });
   });
 
@@ -632,6 +1348,44 @@ describe("App", () => {
       await vi.advanceTimersByTimeAsync(ms);
       await vi.advanceTimersByTimeAsync(0);
     }
+
+    // Re-checking one service by hand marks it Checking in a snapshot the backend still calls
+    // settled (the rollups are left alone on purpose). A critical list that is fully blocked was
+    // already alerted; the Checking row must not make its re-check look like a *new* block.
+    it("re-checking a service of an already-blocked critical list does not alert again", async () => {
+      const { sendNotification } = await import("@tauri-apps/plugin-notification");
+      const handleSnapshot = await mount({ down_notify: true, blocked_notify: true });
+      const onDelta = vi.mocked(api.onServiceUpdate).mock.calls[0][0];
+      const blockedService = {
+        ...CRIT.lists[0].services[0],
+        state: "blocked" as const,
+        endpoints: [{ id: "e1", host: "google.com", state: "blocked" as const, latency_ms: 40 }],
+      };
+      const BLOCKED: Snapshot = {
+        ...CRIT,
+        lists: [{ ...CRIT.lists[0], all_down: true, services: [blockedService] }],
+        overall: "red",
+      };
+      const delta = (service: typeof blockedService | (typeof CHECKING)["lists"][0]["services"][0]) => ({
+        list_id: "internet",
+        service,
+        list_all_down: true,
+        overall: "red" as const,
+        cut_off: false,
+        settled: true, // the backend leaves settled alone for a one-off check
+      });
+
+      handleSnapshot(CRIT);
+      handleSnapshot(BLOCKED); // the list becomes fully blocked: one alert, once the batch settles
+      await settle(QUIET_MS);
+      expect(sendNotification).toHaveBeenCalledTimes(1);
+
+      onDelta(delta(CHECKING.lists[0].services[0])); // the user clicks the service: it shows Checking …
+      await settle(QUIET_MS);
+      onDelta(delta(blockedService)); // … and is still blocked
+      await settle(QUIET_MS);
+      expect(sendNotification).toHaveBeenCalledTimes(1); // no second alert
+    });
 
     it("cut-off fires exactly one down notification on entry, silent on recovery/first-load", async () => {
       const { sendNotification } = await import("@tauri-apps/plugin-notification");
@@ -972,7 +1726,6 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /menu/i }));
     await user.click(screen.getByRole("button", { name: /^settings$/i }));
     await user.click(screen.getByRole("button", { name: /import/i }));
     await user.click(await screen.findByRole("button", { name: /overwrite/i }));
@@ -989,7 +1742,6 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /menu/i }));
     await user.click(screen.getByRole("button", { name: /^settings$/i }));
     await user.click(screen.getByRole("button", { name: /import/i }));
 

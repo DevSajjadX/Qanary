@@ -1,4 +1,4 @@
-/* Qanary design tokens — the "Canary" design system.
+/* Qanary design tokens — the "Canary" design system, Glass look (ADR-0032).
  *
  * Single source of truth for color, type, spacing, radii, elevation.
  * Theme = follow OS by default, with manual override:
@@ -10,9 +10,10 @@
  * uses the system WKWebView; fine on current macOS. If an old WebView ever
  * matters, fall back to a duplicated `[data-theme="dark"]` block.
  *
- * Naming: --state-* and --brand-* are CONSTANT across light/dark AND across
- * surfaces (window / widget / tray) — a green dot means the same thing
- * everywhere. Everything wrapped in light-dark() is theme-adaptive chrome.
+ * Naming: --state-* and --brand-* are CONSTANT across light/dark and across
+ * in-app surfaces — a green dot means the same thing everywhere. (The tray icon
+ * is drawn in Rust and still uses the previous palette — see docs/TODO.md.)
+ * Everything wrapped in light-dark() is theme-adaptive chrome.
  */
 
 :root {
@@ -21,13 +22,15 @@
   /* ---- State colors (CONSTANT — never themed, never per-surface) ---- */
   /* Heat axis up -> blocked -> down. `blocked` is amber-orange, NOT yellow,
    * so canary yellow is free for the brand. See ADR-0006. */
-  --state-up: #1fb872;
+  --state-up: #2fd08a;
   /* TCP-only reachable (wildcard zones): blue — distinct from the up→blocked→down
    * heat axis, signalling "reachable but HTTPS not verified". */
   --state-reachable: #3b82f6;
-  --state-blocked: #f2792b;
-  --state-down: #e03131;
+  --state-blocked: #ff9a3d;
+  --state-down: #ff5a52;
   --state-checking: #8b93a3;
+  /* No network at all (cut-off). Deeper than --state-down so the two alarms read apart. */
+  --state-offline: #b8123f;
 
   /* Severity (overall app light, binary) reuses the state palette. */
   --sev-green: var(--state-up);
@@ -36,41 +39,35 @@
   /* ---- Brand (CONSTANT) ---- */
   /* Canary yellow. Yellow fails contrast on white and against white text, so
    * text ON brand must use --brand-ink. Enforced by the Button component. */
-  --brand: #ffcc00;
+  --brand: #ffd23f;
   --brand-ink: #3d2e00;
-  --brand-press: #e6b800;
+  --brand-press: #e6bb2e;
 
   /* ---- Chrome layers (theme-adaptive) ---- */
-  --bg-base: light-dark(#fbfaf6, #14130f); /* warm off-white / warm near-black */
-  --bg-layer: light-dark(#ffffff, #1c1b16); /* cards */
-  --bg-inset: light-dark(#f2f0e9, #24221b); /* inputs, wells */
-  --text-strong: light-dark(#1a1a17, #f4f1e8);
-  --text-muted: light-dark(#6b6f76, #9a968a);
-  --border: light-dark(#e6e3da, #2e2c24);
+  /* Glass: the window is a translucent sheet over a status-tinted glow. Dark is
+   * near-black with white-alpha layers; light is a cool gray wall with white-alpha
+   * layers. Opaque layers (--bg-layer) are for menus and modals, which must stay
+   * readable whatever is behind them. */
+  --bg-base: light-dark(#c9ccd6, #0d0d10);
+  --bg-layer: light-dark(#f3f4f8, #1c1c1f); /* menus, modals */
+  --bg-inset: light-dark(rgba(30, 28, 60, 0.07), rgba(255, 255, 255, 0.07)); /* inputs, wells */
+  --text-strong: light-dark(#15131f, #ffffff);
+  --text-muted: light-dark(rgba(21, 19, 31, 0.6), rgba(255, 255, 255, 0.66));
+  --border: light-dark(rgba(30, 28, 60, 0.14), rgba(255, 255, 255, 0.12));
 
-  /* ---- Emotional wash (theme-adaptive) — drives calm vs alarmed mood ---- */
-  /* Top-anchored radial behind the StatusHero. Calm = warm yellow glow,
-   * alarm = red bleed. A token so the widget/tray inherit the same mood. */
-  --wash-calm: radial-gradient(
-    120% 80% at 50% 0%,
-    light-dark(#fff6d6, #211d0f) 0%,
-    var(--bg-base) 60%
-  );
-  --wash-warn: radial-gradient(
-    120% 80% at 50% 0%,
-    light-dark(#fef0e0, #1e1508) 0%,
-    var(--bg-base) 60%
-  );
-  --wash-alarm: radial-gradient(
-    120% 80% at 50% 0%,
-    light-dark(#fce3e0, #241210) 0%,
-    var(--bg-base) 60%
-  );
+  /* ---- Glass surfaces (theme-adaptive) ---- */
+  --glass: light-dark(rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.06));
+  --glass-strong: light-dark(rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.11));
+  --stroke: light-dark(rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.12));
+  /* Tinted red used for "Down"/"Critical" text — plain --state-down is too pale on
+   * the dark glass and too bright on the light one. */
+  --down-ink: light-dark(#c4221b, #ff8f89);
+  --glass-blur: blur(40px) saturate(1.6);
 
   /* ---- Elevation (theme-adaptive shadow) ---- */
   --elevation: light-dark(
-    0 2px 8px rgba(40, 35, 10, 0.08),
-    0 4px 16px rgba(0, 0, 0, 0.5)
+    0 6px 24px rgba(30, 28, 60, 0.16),
+    0 10px 30px rgba(0, 0, 0, 0.55)
   );
   /* StatusHero bloom — identity, driven by severity color at call site. */
 

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { EndpointStatus, ServiceState, ServiceStatus } from "../types";
 import { Icon } from "./Icon";
+import { useCollapsible } from "./useCollapsible";
+import { averageLatency, averageLatencyTitle } from "../utils/averageLatency";
 import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 
 /** Trailing note for an endpoint: latency when Up, "TCP only" for a wildcard's
@@ -20,10 +22,66 @@ const STATE_TITLE: Record<ServiceState, string> = {
   checking: "Checking…",
 };
 
+/** Boxed label for the two states worth shouting about. Up/Reachable/Checking stay quiet. */
+const BADGE_LABEL: Partial<Record<ServiceState, string>> = {
+  blocked: "Blocked",
+  down: "Down",
+};
+
+/** "Pinging…" with three dots that take turns lighting up — shown in place of the latency while a
+ *  service or one of its hosts is being (re-)checked, so it is obvious something is happening. */
+function Pinging() {
+  return (
+    <span className="row-pinging">
+      Pinging
+      <span className="ping-dots" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+    </span>
+  );
+}
+
+/** The service's tile: its favicon, or the first letter until (or unless) the icon loads —
+ *  Iran-hosted sites often have none. The status dot sits on the tile's corner. */
+function ServiceAvatar({
+  label,
+  host,
+  state,
+}: {
+  label: string;
+  host: string;
+  state: ServiceState;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return (
+    <span
+      className={`row-avatar${loaded ? " row-avatar-icon" : ""}`}
+      data-state={state}
+      title={STATE_TITLE[state]}
+    >
+      <span className="row-avatar-letter">{(label[0] ?? "?").toUpperCase()}</span>
+      {host && !failed && (
+        <img
+          className="row-favicon"
+          src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`}
+          alt=""
+          loading="lazy"
+          onLoad={() => setLoaded(true)}
+          onError={() => setFailed(true)}
+        />
+      )}
+    </span>
+  );
+}
+
 export function ServiceRow({
   status,
   onRemove,
   onEdit,
+  onCheck,
   sortRef,
   sortStyle,
   gripListeners,
@@ -32,6 +90,8 @@ export function ServiceRow({
   status: ServiceStatus;
   onRemove: () => Promise<unknown>;
   onEdit: () => void;
+  /** Re-check this service now — or, given an endpoint id, only that endpoint. */
+  onCheck?: (endpointId?: string) => void;
   sortRef?: (node: HTMLLIElement | null) => void;
   sortStyle?: React.CSSProperties;
   gripListeners?: DraggableSyntheticListeners;
@@ -42,6 +102,7 @@ export function ServiceRow({
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuUp, setMenuUp] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const { mounted: endpointsMounted, anim: endpointsAnim } = useCollapsible(expanded);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -56,14 +117,12 @@ export function ServiceRow({
 
   const multiEndpoint = status.endpoints.length > 1;
 
-  const blockedCount = status.endpoints.filter(
-    (e) => e.state === "blocked",
-  ).length;
-  const reachedCount = status.endpoints.filter((e) => e.state === "up").length;
-  const tcpOnlyCount = status.endpoints.filter(
-    (e) => e.state === "reachable",
-  ).length;
-  const downCount = status.endpoints.filter((e) => e.state === "down").length;
+  const count = (state: ServiceState) =>
+    status.endpoints.filter((e) => e.state === state).length;
+  // Heat order: up → reachable → blocked → down (checking last).
+  const counts = (["up", "reachable", "blocked", "down", "checking"] as const)
+    .map((state) => ({ state, n: count(state) }))
+    .filter((c) => c.n > 0);
 
   const primaryEndpoint = status.endpoints[0];
 
@@ -79,15 +138,41 @@ export function ServiceRow({
   // Latency for a confirmed Up; for a wildcard's TCP-only Reachable, a note instead
   // (no HTTPS leg ran, so there's no full-path latency to show).
   const singleLatency = !multiEndpoint ? endpointNote(primaryEndpoint) : "";
-
-  const faviconHost = primaryEndpoint?.host ?? "";
+  const badge = !multiEndpoint ? BADGE_LABEL[status.state] : undefined;
+  // A closed group shows how fast its hosts are on average ("~45 ms"); open, each host shows its own.
+  const groupSpeed = multiEndpoint && !expanded ? averageLatency(status.endpoints) : null;
 
   const inReorderMode = Boolean(gripListeners);
 
+  // Clicking a name re-checks it. A click on something that is already being checked would only
+  // queue a second probe for nothing — but only *that* thing counts: another host of a group can
+  // still be checked while one is in flight, and the group name works until every host is.
+  const canCheck = Boolean(onCheck) && !inReorderMode;
+  function check(e: React.MouseEvent, endpointId?: string) {
+    e.stopPropagation(); // the row's own click expands/collapses a group
+    const inFlight = endpointId
+      ? status.endpoints.find((x) => x.id === endpointId)?.state === "checking"
+      : status.endpoints.length > 0 && status.endpoints.every((x) => x.state === "checking");
+    if (!inFlight) onCheck?.(endpointId);
+  }
+
+  // The whole multi-endpoint row is the expander; the ⋮ menu and the open endpoint list
+  // are not.
+  function handleRowClick(e: React.MouseEvent) {
+    if (!multiEndpoint || inReorderMode) return;
+    if ((e.target as HTMLElement).closest(".list-menu-wrap, .endpoint-wrap")) return;
+    setExpanded((x) => !x);
+  }
+
   return (
-    <li className="row" ref={sortRef} style={sortStyle}>
+    <li
+      className={`row${multiEndpoint ? " row-multi" : ""}${expanded ? " row-open" : ""}`}
+      ref={sortRef}
+      style={sortStyle}
+      onClick={handleRowClick}
+    >
       {inReorderMode ? (
-        // In reorder mode: replace the status dot with a drag grip in the same left slot.
+        // In reorder mode: replace the tile with a drag grip in the same left slot.
         <button
           className="row-grip-btn"
           {...gripListeners}
@@ -97,73 +182,64 @@ export function ServiceRow({
           <Icon name="grip" size={14} />
         </button>
       ) : (
-        <span
-          className={`dot dot-${status.state}`}
-          title={STATE_TITLE[status.state]}
+        <ServiceAvatar
+          label={status.label}
+          host={primaryEndpoint?.host ?? ""}
+          state={status.state}
         />
       )}
-      <img
-        className="row-favicon"
-        src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(faviconHost)}&sz=64`}
-        alt=""
-        loading="lazy"
-        onError={(e) => {
-          e.currentTarget.style.visibility = "hidden";
-        }}
-      />
-      <span className="row-label">{status.label}</span>
 
-      {multiEndpoint ? (
-        <>
+      <div className="row-main">
+        {canCheck ? (
           <button
-            className="row-endpoint-count"
-            onClick={() => setExpanded((x) => !x)}
-            title={expanded ? "Collapse endpoints" : "Expand endpoints"}
+            type="button"
+            className="row-label row-check"
+            title={multiEndpoint ? `Check all ${status.endpoints.length} hosts now` : "Check now"}
+            onClick={(e) => check(e)}
           >
-            <span>
-              {reachedCount > 0 ? (
-                <span>
-                  {" "}
-                  · {reachedCount} <span className="dot dot-small dot-up" />
-                </span>
-              ) : (
-                <></>
-              )}
-              {tcpOnlyCount > 0 ? (
-                <span>
-                  {" "}
-                  · {tcpOnlyCount}{" "}
-                  <span className="dot dot-small dot-reachable" />
-                </span>
-              ) : (
-                <></>
-              )}
-              {blockedCount > 0 ? (
-                <span>
-                  {" "}
-                  · {blockedCount}{" "}
-                  <span className="dot dot-small dot-blocked" />
-                </span>
-              ) : (
-                <></>
-              )}
-              {downCount > 0 ? (
-                <span>
-                  {" "}
-                  · {downCount} <span className="dot dot-small dot-down" />
-                </span>
-              ) : (
-                <></>
-              )}
-            </span>
-            <Icon name={expanded ? "chevronUp" : "chevronDown"} size={14} />
+            {status.label}
           </button>
-        </>
-      ) : (
-        <>
+        ) : (
+          <span className="row-label">{status.label}</span>
+        )}
+        {multiEndpoint ? (
+          <span className="row-sum">
+            {counts.map(({ state, n }) => (
+              <span className="sc" key={state} title={`${n} ${state}`}>
+                <b>{n}</b>
+                <i className="sd" data-state={state} />
+              </span>
+            ))}
+          </span>
+        ) : (
           <span className="row-host">{primaryEndpoint?.host ?? ""}</span>
-          <span className="row-latency">{singleLatency}</span>
-        </>
+        )}
+      </div>
+
+      {status.state === "checking" ? (
+        <Pinging />
+      ) : groupSpeed ? (
+        <span className="row-latency" title={averageLatencyTitle(groupSpeed, status.endpoints.length)}>
+          ~{groupSpeed.mean} ms
+        </span>
+      ) : (
+        !multiEndpoint && singleLatency && <span className="row-latency">{singleLatency}</span>
+      )}
+      {badge && (
+        <span className="row-badge" data-state={status.state}>
+          {badge}
+        </span>
+      )}
+
+      {multiEndpoint && !inReorderMode && (
+        <button
+          className="list-menu-btn row-chev"
+          title={expanded ? "Collapse endpoints" : "Expand endpoints"}
+          aria-label={expanded ? "Collapse endpoints" : "Expand endpoints"}
+          aria-expanded={expanded}
+        >
+          <Icon name="chevronDown" size={16} strokeWidth={2.7} />
+        </button>
       )}
 
       <div className="list-menu-wrap" ref={menuRef}>
@@ -181,6 +257,8 @@ export function ServiceRow({
             setMenuOpen(true);
           }}
           title="Service options"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
         >
           <Icon name="ellipsisVertical" />
         </button>
@@ -193,7 +271,7 @@ export function ServiceRow({
                 onEdit();
               }}
             >
-              <Icon name="edit" size={14} />
+              <Icon name="edit" size={15} />
               <span>Edit</span>
             </button>
             <button
@@ -204,29 +282,45 @@ export function ServiceRow({
               }}
               disabled={busy}
             >
-              <Icon name="x" size={14} />
+              <Icon name="x" size={15} />
               <span>Remove</span>
             </button>
           </div>
         )}
       </div>
 
-      {multiEndpoint && expanded && (
-        <ul className="endpoint-list">
-          {status.endpoints.map((ep) => {
-            const epLatency = endpointNote(ep);
-            return (
-              <li key={ep.id} className="endpoint-row">
-                <span
-                  className={`dot dot-${ep.state}`}
-                  title={STATE_TITLE[ep.state]}
-                />
-                <span className="row-host">{ep.host}</span>
-                <span className="row-latency">{epLatency}</span>
-              </li>
-            );
-          })}
-        </ul>
+      {multiEndpoint && endpointsMounted && (
+        <div className="collapsible endpoint-wrap" data-anim={endpointsAnim}>
+          <div className="collapsible-in">
+            <ul className="endpoint-list">
+              {status.endpoints.map((ep) => {
+                const epLatency = endpointNote(ep);
+                return (
+                  <li key={ep.id} className="endpoint-row">
+                    <i className="sd sd-big" data-state={ep.state} title={STATE_TITLE[ep.state]} />
+                    {canCheck ? (
+                      <button
+                        type="button"
+                        className="row-host row-check"
+                        title="Check this host now"
+                        onClick={(e) => check(e, ep.id)}
+                      >
+                        {ep.host}
+                      </button>
+                    ) : (
+                      <span className="row-host">{ep.host}</span>
+                    )}
+                    {ep.state === "checking" ? (
+                      <Pinging />
+                    ) : (
+                      <span className="row-latency">{epLatency || (ep.state === "down" ? "—" : "")}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </div>
       )}
     </li>
   );

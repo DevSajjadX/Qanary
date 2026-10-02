@@ -11,6 +11,16 @@ export const getConfig = () => invoke<Config>("get_config");
 /** Probe everything immediately; results arrive as `status-update` / `service-update` events. */
 export const refreshNow = () => invoke<void>("refresh_now");
 
+/** Re-check every service of one list now; the other lists are left alone. */
+export const checkList = (listId: string) => invoke<void>("check_list", { listId });
+
+/**
+ * Re-check one service now — every endpoint of it, or just `endpointId` — leaving the rest alone.
+ * It shows "checking" at once; the result arrives as an ordinary `service-update`.
+ */
+export const checkNow = (listId: string, serviceId: string, endpointId?: string) =>
+  invoke<void>("check_now", { listId, serviceId, endpointId });
+
 /** Add one or more services (each with endpoints) to a list. */
 export const addServices = (listId: string, services: ServiceDraft[]) =>
   invoke<Config>("add_services", { listId, services });
@@ -74,6 +84,7 @@ export type SettingsPatch = Partial<
     | "blocked_sound"
     | "notify_volume"
     | "hide_dock"
+    | "tray_style"
   >
 >;
 

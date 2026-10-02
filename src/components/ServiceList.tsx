@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ListStatus } from "../types";
 import { ServiceRow } from "./ServiceRow";
 import { Icon } from "./Icon";
+import { useCollapsible } from "./useCollapsible";
+import { useHoverScroll } from "./useHoverScroll";
 import type { GripProps } from "../App";
 import {
   DndContext,
@@ -48,6 +50,8 @@ export function ServiceList({
   onEditList,
   onAddService,
   onEditService,
+  onCheckService,
+  onCheckList,
   onToggleCollapse,
   onEditOrder,
   // Optional sortable props passed from SortableListItem in App.tsx (list-level drag).
@@ -64,16 +68,27 @@ export function ServiceList({
   onEditList: (listId: string, name: string, icon: string, critical: boolean) => void;
   onAddService: (listId: string, listName: string) => void;
   onEditService: (listId: string, serviceId: string) => void;
+  onCheckService: (listId: string, serviceId: string, endpointId?: string) => void;
+  onCheckList: (listId: string) => void;
   onToggleCollapse: (listId: string, collapsed: boolean) => void;
   onEditOrder: () => void;
 } & Partial<GripProps>) {
-  const banner = list.all_down;
+  // "All unreachable" replaces the services-up count when the whole list is down.
+  const allDown = list.all_down && list.services.length > 0;
+  const upCount = list.services.filter((s) => s.state !== "down").length;
   const [menuOpen, setMenuOpen] = useState(false);
   // Read from the snapshot, never copied into local state: a remount (entering/leaving reorder
   // mode) would reset a copy to a stale value.
   const collapsed = list.collapsed;
   const [deleteBusy, setDeleteBusy] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const { mounted: bodyMounted, anim: bodyAnim } = useCollapsible(!collapsed);
+  const nameScroll = useHoverScroll<HTMLElement>();
+  // Every service is already being checked: another click on the list name would only queue
+  // the same probes again.
+  const allChecking =
+    list.services.length > 0 &&
+    list.services.every((s) => s.endpoints.length > 0 && s.endpoints.every((e) => e.state === "checking"));
 
   // PointerSensor for inner service-level drag.
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -145,6 +160,7 @@ export function ServiceList({
           status={s}
           onRemove={() => onRemoveService(list.id, s.id)}
           onEdit={() => onEditService(list.id, s.id)}
+          onCheck={(endpointId) => onCheckService(list.id, s.id, endpointId)}
         />
       ))}
       {list.services.length === 0 && (
@@ -154,7 +170,11 @@ export function ServiceList({
   );
 
   return (
-    <section className={`list${reorderMode ? " list-reorder" : ""}`} ref={sortRef} style={sortStyle}>
+    <section
+      className={`list${reorderMode ? " list-reorder" : ""}${collapsed ? " list-collapsed" : ""}`}
+      ref={sortRef}
+      style={sortStyle}
+    >
       <div className="list-head">
         {/* Grip handle: visible only in reorder mode, owns the drag listeners for list-level drag. */}
         {reorderMode && (
@@ -167,10 +187,57 @@ export function ServiceList({
             <Icon name="grip" size={14} />
           </button>
         )}
-        <span className="list-name">
+        {/* One fixed gray frame for every list — it never changes with status. */}
+        <span
+          className={`list-name${reorderMode ? "" : " list-name-check"}`}
+          onMouseEnter={nameScroll.onMouseEnter}
+          onMouseLeave={nameScroll.onMouseLeave}
+          // The whole chip is the target; the button inside is what keyboard users reach (its
+          // Enter/Space click bubbles up to here).
+          onClick={reorderMode || allChecking ? undefined : () => onCheckList(list.id)}
+        >
           {list.icon && <span className="list-name-icon">{list.icon}</span>}
-          <h2 className="list-name-text">{list.name}</h2>
+          {/* A long name is cut with an ellipsis; hovering scrolls it to its end. */}
+          <h2
+            className="list-name-text"
+            title={reorderMode ? list.name : `${list.name} — click to check the whole list`}
+          >
+            {/* The inner element is what is clipped and scrolled on hover (see .list-name-btn). */}
+            {reorderMode ? (
+              <span className="list-name-clip" ref={nameScroll.ref as React.Ref<HTMLSpanElement>}>
+                <span>{list.name}</span>
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="list-name-btn"
+                ref={nameScroll.ref as React.Ref<HTMLButtonElement>}
+              >
+                {/* The text run: this is what the hover glide moves (see useHoverScroll). */}
+                <span>{list.name}</span>
+              </button>
+            )}
+          </h2>
         </span>
+        {list.critical && (
+          <span
+            className={`crit-pill${allDown ? " crit-pill-down" : ""}`}
+            title={allDown ? "Critical list is down" : "Critical list"}
+          >
+            <Icon name="shield" size={13} />
+            <span className="crit-pill-text">Critical</span>
+          </span>
+        )}
+        {allDown ? (
+          <small className="list-count list-count-down" title="Every service in this list is unreachable">
+            <span className="list-count-full">All unreachable</span>
+            <span className="list-count-short">All down</span>
+          </small>
+        ) : (
+          <small className="list-count" title="Services up">
+            {upCount}/{list.services.length}
+          </small>
+        )}
         {!reorderMode && (
           <button
             className="list-menu-btn"
@@ -186,12 +253,15 @@ export function ServiceList({
               className="list-menu-btn"
               onClick={() => setMenuOpen((o) => !o)}
               title="List options"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
             >
               <Icon name="ellipsisHorizontal" />
             </button>
             {menuOpen && (
               <div className="list-dropdown">
                 <button className="list-dropdown-item" onClick={handleEdit}>
+                  <Icon name="edit" size={15} />
                   Edit
                 </button>
                 <button
@@ -201,6 +271,7 @@ export function ServiceList({
                     onEditOrder();
                   }}
                 >
+                  <Icon name="order" size={15} />
                   Edit order
                 </button>
                 <button
@@ -208,6 +279,7 @@ export function ServiceList({
                   onClick={handleDelete}
                   disabled={deleteBusy}
                 >
+                  <Icon name="trash" size={15} />
                   Delete
                 </button>
               </div>
@@ -219,23 +291,19 @@ export function ServiceList({
             className="list-menu-btn list-chevron-btn"
             onClick={handleToggleCollapse}
             title={collapsed ? "Expand" : "Collapse"}
+            aria-expanded={!collapsed}
           >
-            <Icon name={collapsed ? "chevronDown" : "chevronUp"} />
+            <Icon name="chevronDown" size={16} strokeWidth={2.7} />
           </button>
         )}
       </div>
 
-      {!collapsed && (
-        <>
-          {banner && !reorderMode && (
-            <div className="banner banner-critical">
-              All services unreachable
-            </div>
-          )}
-          <ul className="rows">
-            {serviceRows}
-          </ul>
-        </>
+      {bodyMounted && (
+        <div className="collapsible" data-anim={bodyAnim}>
+          <div className="collapsible-in">
+            <ul className="rows">{serviceRows}</ul>
+          </div>
+        </div>
       )}
     </section>
   );

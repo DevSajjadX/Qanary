@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import {
   save as saveDialog,
   open as openDialog,
 } from "@tauri-apps/plugin-dialog";
-import type { Config } from "../types";
+import type { Config, TrayStyle } from "../types";
 import { parseHost } from "../utils/parseHost";
 import type { UpdatePhase } from "../App";
 import { exportConfig, type SettingsPatch } from "../api";
@@ -26,6 +26,21 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Icon } from "./Icon";
+import { useTheme, type ThemeMode } from "../theme";
+import { useOrbStyle, type OrbStyle } from "../orbStyle";
+import { TrayIcon, TRAY_MOODS, TRAY_STYLES } from "./trayIcons";
+import { OrbThumb, ORB_STYLE_LABEL } from "./orbIcons";
+
+const THEME_ICON: Record<ThemeMode, "sun" | "moon" | "monitor"> = {
+  light: "sun",
+  dark: "moon",
+  system: "monitor",
+};
+const THEME_LABEL: Record<ThemeMode, string> = {
+  light: "Light",
+  dark: "Dark",
+  system: "System",
+};
 
 /** The update state App owns, plus its two actions — Settings only renders it. */
 export type Updater = {
@@ -92,6 +107,33 @@ function SortableProviderSlot({
   );
 }
 
+/** A titled group of settings. A plain `role="group"` div, not a <fieldset>/<legend>: legend
+ *  placement and fieldset-as-flex-container differ across WebKit versions, and the heading
+ *  must sit at the top of the card in all of them. */
+function SettingsCard({
+  title,
+  className = "",
+  children,
+}: {
+  title: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const id = useId();
+  return (
+    <div
+      className={`settings-card ${className}`.trim()}
+      role="group"
+      aria-labelledby={id}
+    >
+      <div className="settings-card-title" id={id}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 export function Settings({
   config,
   open,
@@ -99,6 +141,7 @@ export function Settings({
   onSave,
   onShowReleaseNotes,
   onImport,
+  onResetConfig,
   updater,
 }: {
   config: Config | null;
@@ -108,6 +151,8 @@ export function Settings({
   onSave: (patch: SettingsPatch) => Promise<unknown>;
   onShowReleaseNotes: () => void;
   onImport: (path: string) => void;
+  /** Wipe the config back to the seeded defaults (the caller reloads on success). */
+  onResetConfig: () => void;
   updater: Updater;
 }) {
   const [slots, setSlots] = useState<ProviderSlot[]>(() => toSlots([]));
@@ -131,6 +176,7 @@ export function Settings({
   const [loginInitial, setLoginInitial] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [hideDock, setHideDockState] = useState(false);
+  const [trayStyle, setTrayStyle] = useState<TrayStyle>("rings");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [configMsg, setConfigMsg] = useState<{
@@ -140,6 +186,11 @@ export function Settings({
   // Path picked for import, awaiting the overwrite confirmation. null = no pending import.
   const [pendingImport, setPendingImport] = useState<string | null>(null);
   const isMac = navigator.userAgent.includes("Mac");
+  // Theme + "Reset to defaults" used to live in the hero menu; they moved here unchanged.
+  const [theme, cycleTheme] = useTheme();
+  const [orbStyle, setOrbStyle] = useOrbStyle();
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
 
   useEffect(() => {
     getVersion()
@@ -162,8 +213,10 @@ export function Settings({
     setBlockedSound(config.blocked_sound);
     setVolume(config.notify_volume);
     setHideDockState(config.hide_dock);
+    setTrayStyle(config.tray_style);
     setSaveError(null);
     setLoginError(null);
+    setConfirmReset(false);
     // Launch-at-login lives in the OS — query it fresh as the baseline.
     isEnabled()
       .then((on) => {
@@ -228,6 +281,7 @@ export function Settings({
         blocked_sound: blockedSound,
         notify_volume: volume,
         hide_dock: hideDock,
+        tray_style: trayStyle,
       });
       onClose();
     } catch (err) {
@@ -235,6 +289,12 @@ export function Settings({
     } finally {
       setSaving(false);
     }
+  }
+
+  function handleReset() {
+    setResetBusy(true);
+    onClose(); // close first: a failed reset reports through the notice behind the modal
+    onResetConfig();
   }
 
   async function handleCheckUpdate() {
@@ -257,9 +317,40 @@ export function Settings({
         >
           <h3 className="modal-title">Settings</h3>
 
+          {/* Appearance — standalone, applies immediately (theme is a per-device preference). */}
+          <SettingsCard className="appearance-card" title="Appearance">
+            <button
+              type="button"
+              className="config-action-btn theme-btn"
+              onClick={() => cycleTheme()}
+              title="Cycle theme"
+            >
+              <Icon name={THEME_ICON[theme]} size={14} />
+              <span>Theme: {THEME_LABEL[theme]}</span>
+            </button>
+            {/* Status icon style — how the hero orb draws the mood. Applies immediately. */}
+            <div className="orb-style" role="radiogroup" aria-label="Status icon">
+              <span className="orb-style-label">Status icon</span>
+              <div className="orb-style-options">
+                {(["rings", "pulse"] as OrbStyle[]).map((style) => (
+                  <button
+                    key={style}
+                    type="button"
+                    role="radio"
+                    aria-checked={orbStyle === style}
+                    className="orb-style-opt"
+                    onClick={() => setOrbStyle(style)}
+                  >
+                    <OrbThumb style={style} />
+                    <span>{ORB_STYLE_LABEL[style]}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </SettingsCard>
+
           {/* Config export/import — standalone, NOT governed by the form's Save button. */}
-          <fieldset className="settings-card config-card">
-            <legend className="settings-card-title">Config</legend>
+          <SettingsCard className="config-card" title="Config">
             <div className="config-actions">
               <button
                 type="button"
@@ -298,6 +389,35 @@ export function Settings({
                 Import…
               </button>
             </div>
+            {confirmReset ? (
+              <div className="reset-confirm">
+                <span className="reset-confirm-label">Reset to defaults?</span>
+                <button
+                  type="button"
+                  className="config-action-btn reset-danger"
+                  onClick={handleReset}
+                  disabled={resetBusy}
+                >
+                  Yes, reset
+                </button>
+                <button
+                  type="button"
+                  className="config-action-btn"
+                  onClick={() => setConfirmReset(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="config-action-btn reset-danger reset-btn"
+                onClick={() => setConfirmReset(true)}
+              >
+                <Icon name="x" size={14} />
+                <span>Reset to defaults</span>
+              </button>
+            )}
             {configMsg && (
               <span
                 className={
@@ -309,13 +429,10 @@ export function Settings({
                 {configMsg.text}
               </span>
             )}
-          </fieldset>
+          </SettingsCard>
 
           <form className="providers-form" onSubmit={handleSave}>
-            <fieldset className="settings-card">
-              <legend className="settings-card-title">
-                IP providers (drag to reorder)
-              </legend>
+            <SettingsCard title="IP providers (drag to reorder)">
               <DndContext sensors={sensors} onDragEnd={handleProviderDragEnd}>
                 <SortableContext
                   items={slots.map((s) => s.id)}
@@ -338,12 +455,9 @@ export function Settings({
                   ))}
                 </SortableContext>
               </DndContext>
-            </fieldset>
+            </SettingsCard>
 
-            <fieldset className="settings-card">
-              <legend className="settings-card-title">
-                Probe interval (seconds, min 10)
-              </legend>
+            <SettingsCard title="Probe interval (seconds, min 10)">
               <div className="interval-row">
                 <label className="interval-label" htmlFor="critical-interval">
                   Critical lists
@@ -378,12 +492,9 @@ export function Settings({
                 rate-limit or block you. Keep intervals as high as your needs
                 allow.
               </p>
-            </fieldset>
+            </SettingsCard>
 
-            <fieldset className="settings-card">
-              <legend className="settings-card-title">
-                Critical-list alerts
-              </legend>
+            <SettingsCard title="Critical-list alerts">
               <div className="alert-grid">
                 <span className="alert-grid-head" />
                 <span className="alert-grid-head">Notify</span>
@@ -471,10 +582,9 @@ export function Settings({
                   Enable a Sound alert to set the volume.
                 </p>
               )}
-            </fieldset>
+            </SettingsCard>
 
-            <fieldset className="settings-card">
-              <legend className="settings-card-title">System</legend>
+            <SettingsCard title="System">
               <div className="system-toggle-row">
                 <label className="system-toggle-label" htmlFor="login-toggle">
                   Launch at login
@@ -506,7 +616,34 @@ export function Settings({
                   </div>
                 </>
               )}
-            </fieldset>
+
+              {/* Menu-bar icon look — four looks, each shown in every state it can take. Part of
+                  Save: the backend draws the icon, so it is a config setting, not a per-device one. */}
+              <div className="orb-style orb-style-system" role="radiogroup" aria-label="Menu bar icon">
+                <span className="orb-style-label">Menu bar icon</span>
+                <div className="tray-options">
+                  {TRAY_STYLES.map(({ style, label }) => (
+                    <button
+                      key={style}
+                      type="button"
+                      role="radio"
+                      aria-checked={trayStyle === style}
+                      className="orb-style-opt tray-opt"
+                      onClick={() => setTrayStyle(style)}
+                    >
+                      <span className="tray-strip" aria-hidden="true">
+                        {TRAY_MOODS.map(({ mood, title }) => (
+                          <span key={mood} title={title}>
+                            <TrayIcon style={style} mood={mood} />
+                          </span>
+                        ))}
+                      </span>
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </SettingsCard>
 
             {saveError && <p className="modal-error" role="alert">{saveError}</p>}
             <div className="modal-actions">

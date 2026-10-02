@@ -4,6 +4,7 @@ import * as api from "./api";
 import type { ChangelogEntry } from "./api";
 import type { Config, ListStatus, Service, ServiceDraft, Snapshot } from "./types";
 import { StatusHero } from "./components/StatusHero";
+import { Icon } from "./components/Icon";
 import { ServiceList } from "./components/ServiceList";
 import { Settings } from "./components/Settings";
 import { ListModal } from "./components/ListModal";
@@ -71,6 +72,20 @@ type ModalState =
   | { kind: "settings" };
 
 export type UpdatePhase = "available" | "downloading" | "ready";
+
+/**
+ * Is this snapshot a measurement, safe to diff for alerts? The backend's `settled` says no endpoint
+ * is Checking — except that re-checking one service by hand marks just that row Checking and leaves
+ * `settled` alone (so the rest of the app does not look like it is refreshing). A snapshot that still
+ * has a Checking row is a placeholder for that row, not a result: diffing it would make the row's
+ * own re-check look like a brand-new transition (e.g. an already-blocked list "becoming" blocked).
+ */
+export function isSettled(s: Snapshot): boolean {
+  return (
+    s.settled &&
+    !s.lists.some((l) => l.services.some((sv) => sv.endpoints.some((e) => e.state === "checking")))
+  );
+}
 
 // Thin sortable shell for list-level drag. Only mounted inside a DndContext (when reorderMode).
 // Calls useSortable and passes the ref/style/grip props down to ServiceList.
@@ -212,7 +227,7 @@ function App() {
    */
   function endWakeGrace(s: Snapshot | null) {
     wakeGraceUntilRef.current = null;
-    if (s?.settled) diffAgainstBaseline(s);
+    if (s && isSettled(s)) diffAgainstBaseline(s);
     // A cut-off edge alone is owed too: it has no list id, so it never enters pendingRef (A10).
     const owed = pendingRef.current.size > 0 || cutOffEdgeRef.current;
     if (owed && timerRef.current === null) armFlush();
@@ -302,7 +317,7 @@ function App() {
 
   function handleSnapshot(s: Snapshot) {
     detectWake();
-    if (s.settled) {
+    if (isSettled(s)) {
       const graceUntil = wakeGraceUntilRef.current;
       if (graceUntil === null) {
         diffAgainstBaseline(s);
@@ -515,12 +530,7 @@ function App() {
       <StatusHero
         snapshot={snapshot}
         onRefresh={api.refreshNow}
-        onAddList={() => setModal({ kind: "addList" })}
         onOpenSettings={() => setModal({ kind: "settings" })}
-        onResetConfig={() =>
-          api.resetConfig().then(() => window.location.reload(), report)
-        }
-        onEditOrder={() => setReorderMode(true)}
         updatePhase={updatePhase}
         downloadProgress={downloadProgress}
         onDownload={handleDownload}
@@ -528,77 +538,99 @@ function App() {
       />
 
       {notice && (
-        <div className="banner banner-critical notice" role="alert">
+        <div className="notice" role="alert">
+          <Icon name="alert" size={18} />
           <span>{notice}</span>
           <button className="notice-close" aria-label="Dismiss" onClick={() => setNotice(null)}>
-            ×
+            <Icon name="x" size={16} />
           </button>
         </div>
       )}
 
-      <div className="lists">
-        {/* ponytail: reorderMode gate — DndContext only rendered when needed; avoids
-            useSortable being called outside a context (would throw). */}
-        {reorderMode ? (
-          <DndContext sensors={sensors} onDragEnd={handleListDragEnd}>
-            <SortableContext items={lists.map((l) => l.id)} strategy={verticalListSortingStrategy}>
-              {lists.map((list) => (
-                <SortableListItem
-                  key={list.id}
-                  list={list}
-                  reorderMode={true}
-                  onReorderServices={handleReorderServices}
-                  onToggleCollapse={handleToggleCollapse}
-                  onEditOrder={() => setReorderMode(true)}
-                  onRemoveService={(lid, sid) => api.removeService(lid, sid).then(setConfig, report)}
-                  onRemoveList={(lid) => api.removeList(lid).then(setConfig, report)}
-                  onEditList={(id, name, icon, critical) =>
-                    setModal({ kind: "editList", id, name, icon, critical })
-                  }
-                  onAddService={(listId, listName) =>
-                    setModal({ kind: "addService", listId, listName })
-                  }
-                  onEditService={(listId, serviceId) =>
-                    handleOpenEdit(listId, serviceId, list.name)
-                  }
-                />
-              ))}
-            </SortableContext>
-          </DndContext>
-        ) : (
-          lists.map((list) => (
-            <ServiceList
-              key={list.id}
-              list={list}
-              reorderMode={false}
-              onReorderServices={handleReorderServices}
-              onToggleCollapse={handleToggleCollapse}
-              onEditOrder={() => setReorderMode(true)}
-              onRemoveService={(lid, sid) => api.removeService(lid, sid).then(setConfig, report)}
-              onRemoveList={(lid) => api.removeList(lid).then(setConfig, report)}
-              onEditList={(id, name, icon, critical) =>
-                setModal({ kind: "editList", id, name, icon, critical })
-              }
-              onAddService={(listId, listName) =>
-                setModal({ kind: "addService", listId, listName })
-              }
-              onEditService={(listId, serviceId) =>
-                handleOpenEdit(listId, serviceId, list.name)
-              }
-            />
-          ))
-        )}
-        {lists.length === 0 &&
-          (config?.lists.length === 0 ? (
-            <p className="loading">
-              No lists yet —{" "}
-              <button className="link-btn" onClick={() => setModal({ kind: "addList" })}>
+      {/* The lists scroll under the hero; their top edge fades out (see .lists). */}
+      <div className="lists-wrap">
+        <div className="lists">
+          {/* ponytail: reorderMode gate — DndContext only rendered when needed; avoids
+              useSortable being called outside a context (would throw). */}
+          {reorderMode ? (
+            <DndContext sensors={sensors} onDragEnd={handleListDragEnd}>
+              <SortableContext items={lists.map((l) => l.id)} strategy={verticalListSortingStrategy}>
+                {lists.map((list) => (
+                  <SortableListItem
+                    key={list.id}
+                    list={list}
+                    reorderMode={true}
+                    onReorderServices={handleReorderServices}
+                    onToggleCollapse={handleToggleCollapse}
+                    onEditOrder={() => setReorderMode(true)}
+                    onRemoveService={(lid, sid) => api.removeService(lid, sid).then(setConfig, report)}
+                    onRemoveList={(lid) => api.removeList(lid).then(setConfig, report)}
+                    onEditList={(id, name, icon, critical) =>
+                      setModal({ kind: "editList", id, name, icon, critical })
+                    }
+                    onAddService={(listId, listName) =>
+                      setModal({ kind: "addService", listId, listName })
+                    }
+                    onEditService={(listId, serviceId) =>
+                      handleOpenEdit(listId, serviceId, list.name)
+                    }
+                    onCheckService={() => {}} // reorder mode: names are not clickable
+                    onCheckList={() => {}}
+                  />
+                ))}
+              </SortableContext>
+            </DndContext>
+          ) : (
+            lists.map((list) => (
+              <ServiceList
+                key={list.id}
+                list={list}
+                reorderMode={false}
+                onReorderServices={handleReorderServices}
+                onToggleCollapse={handleToggleCollapse}
+                onEditOrder={() => setReorderMode(true)}
+                onRemoveService={(lid, sid) => api.removeService(lid, sid).then(setConfig, report)}
+                onRemoveList={(lid) => api.removeList(lid).then(setConfig, report)}
+                onEditList={(id, name, icon, critical) =>
+                  setModal({ kind: "editList", id, name, icon, critical })
+                }
+                onAddService={(listId, listName) =>
+                  setModal({ kind: "addService", listId, listName })
+                }
+                onEditService={(listId, serviceId) =>
+                  handleOpenEdit(listId, serviceId, list.name)
+                }
+                onCheckService={(listId, serviceId, endpointId) =>
+                  api.checkNow(listId, serviceId, endpointId).catch(report)
+                }
+                onCheckList={(listId) => api.checkList(listId).catch(report)}
+              />
+            ))
+          )}
+          {lists.length > 0 && !reorderMode && (
+            <div className="list-actions">
+              <button className="list-action-btn" onClick={() => setModal({ kind: "addList" })}>
+                <Icon name="plus" size={15} />
                 Add list
               </button>
-            </p>
-          ) : (
-            <p className="loading">Starting first probe…</p>
-          ))}
+              <button className="list-action-btn" onClick={() => setReorderMode(true)}>
+                <Icon name="order" size={15} />
+                Edit order
+              </button>
+            </div>
+          )}
+          {lists.length === 0 &&
+            (config?.lists.length === 0 ? (
+              <p className="loading">
+                No lists yet —{" "}
+                <button className="link-btn" onClick={() => setModal({ kind: "addList" })}>
+                  Add list
+                </button>
+              </p>
+            ) : (
+              <p className="loading">Starting first probe…</p>
+            ))}
+        </div>
       </div>
 
       {reorderMode && (
@@ -642,6 +674,9 @@ function App() {
         open={modal?.kind === "settings"}
         onClose={() => setModal(null)}
         onSave={(patch) => api.updateSettings(patch).then(setConfig)}
+        onResetConfig={() =>
+          api.resetConfig().then(() => window.location.reload(), report)
+        }
         updater={{
           phase: updatePhase,
           version: updateVersion,

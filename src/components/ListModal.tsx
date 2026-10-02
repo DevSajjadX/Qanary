@@ -66,12 +66,18 @@ export function ListModal({
           </div>
           <button
             type="button"
-            className={`modal-critical-btn${critical ? " modal-critical-btn--on" : ""}`}
+            role="switch"
+            aria-checked={critical}
+            className="modal-critical"
             onClick={() => setCritical((v) => !v)}
             disabled={busy}
             title="When on, this list going fully down raises a red alarm. When off, it only warns (yellow)."
           >
-            Critical
+            <span className="modal-critical-label">
+              Critical
+              <small>All down turns the app red</small>
+            </span>
+            <span className="modal-switch" aria-hidden="true" />
           </button>
           {error && <p className="modal-error">{error}</p>}
           <div className="modal-actions">

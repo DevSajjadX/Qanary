@@ -77,6 +77,45 @@ const ICONS: Record<string, JSX.Element> = {
       <line x1="12" x2="12" y1="17" y2="21" />
     </>
   ),
+  // settings (gear) — hero button
+  settings: (
+    <>
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  // download (update button) — one solid arrow, no base line
+  download: (
+    <>
+      <path d="M12 4v16" />
+      <path d="M5.5 13.5 12 20l6.5-6.5" />
+    </>
+  ),
+  // restart (update ready; also the orb's hover refresh arrow)
+  restart: (
+    <>
+      <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+      <path d="M21 3v5h-5" />
+    </>
+  ),
+  // order (two opposing arrows) — "Edit order"
+  order: <path d="m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16" />,
+  // trash (delete list)
+  trash: <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" />,
+  // shield with "!" (Critical list badge)
+  shield: (
+    <>
+      <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+      <path d="M12 8v4M12 16h.01" />
+    </>
+  ),
+  // alert (error notice)
+  alert: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 7v6M12 16.5h.01" />
+    </>
+  ),
   // grip (drag handle — six dot grid)
   grip: (
     <>
@@ -94,10 +133,12 @@ export function Icon({
   name,
   size = 16,
   className,
+  strokeWidth = 2,
 }: {
   name: keyof typeof ICONS;
   size?: number;
   className?: string;
+  strokeWidth?: number;
 }) {
   return (
     <svg
@@ -107,7 +148,7 @@ export function Icon({
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"

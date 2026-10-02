@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import type { Severity, Snapshot } from "../types";
 import type { UpdatePhase } from "../App";
 import { Canary } from "./Canary";
 import { Icon } from "./Icon";
-import { useTheme, type ThemeMode } from "../theme";
+import { OrbIcon, type Mood } from "./orbIcons";
+import { useOrbStyle } from "../orbStyle";
 
 // Calm vs urgent microcopy, keyed by Severity. One place so tone stays
 // consistent (and is easy to localize later).
@@ -43,61 +44,86 @@ function severityCopy(
   };
 }
 
-const THEME_ICON: Record<ThemeMode, "sun" | "moon" | "monitor"> = {
-  light: "sun",
-  dark: "moon",
-  system: "monitor",
-};
-const THEME_LABEL: Record<ThemeMode, string> = {
-  light: "Light",
-  dark: "Dark",
-  system: "System",
-};
+function moodOf(
+  snapshot: Snapshot | null,
+  overall: Severity,
+  busy: boolean,
+  cutOff: boolean,
+): Mood {
+  if (busy) return "busy"; // refreshing: gray, rings pulse
+  const services = snapshot?.lists.flatMap((l) => l.services) ?? [];
+  if (services.length === 0) return "idle"; // nothing to watch
+  if (cutOff) return "offline";
+  return overall === "green" ? "ok" : overall === "yellow" ? "warn" : "alarm";
+}
 
-/** The canary "egg" — status badge + refresh button in one.
- *  During busy: double ping rings + core breathes; hover shows refresh icon.
- *  On alarm (not busy): core heartbeats. */
-function StatusButton({
-  severity,
+/** The status orb — status badge + refresh button in one.
+ *  The mood is drawn in the user's chosen style (Rings or Pulse); hover swaps it for a
+ *  refresh arrow. Busy: gray, the icon pulses and ripples go outward. */
+function StatusOrb({
+  mood,
   busy,
+  heroRef,
   onClick,
 }: {
-  severity: Severity;
+  mood: Mood;
   busy: boolean;
+  heroRef: React.RefObject<HTMLElement | null>;
   onClick: () => void;
 }) {
-  const coreClass = `status-btn-dot${busy ? " qbreathe" : severity === "red" ? " qhb" : ""}`;
+  const orbRef = useRef<HTMLButtonElement>(null);
+  const first = useRef(true);
+  const [orbStyle] = useOrbStyle();
+
+  // A mood change lands with a pop + ripple (+ a shake for the two alarms), and the
+  // headline recoils. Classes are removed again so the next change can replay them.
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    const orb = orbRef.current;
+    const hero = heroRef.current;
+    if (!orb) return;
+    const orbCls = ["orb-pop", "orb-ring", "orb-flash"];
+    if (mood === "alarm" || mood === "offline") orbCls.push("orb-shake");
+    orb.classList.remove("orb-pop", "orb-ring", "orb-flash", "orb-shake");
+    hero?.classList.remove("hero-recoil");
+    void orb.offsetWidth; // restart the animations
+    orb.classList.add(...orbCls);
+    hero?.classList.add("hero-recoil");
+    const t = setTimeout(() => {
+      orb.classList.remove("orb-pop", "orb-ring", "orb-flash", "orb-shake");
+      hero?.classList.remove("hero-recoil");
+    }, 1300);
+    return () => clearTimeout(t);
+  }, [mood, heroRef]);
+
   return (
-    <button
-      className={`status-btn status-btn-${severity}`}
-      onClick={onClick}
-      disabled={busy}
-      title="Refresh now"
-      aria-label="Refresh"
-    >
-      <span className="status-btn-inner">
-        {busy && (
-          <>
-            <span className="status-btn-ping" />
-            <span className="status-btn-ping" />
-          </>
-        )}
-        <span className={coreClass} />
-      </span>
-      <span className="status-btn-hover-icon" aria-hidden="true">
-        <Icon name="refresh" size={16} />
-      </span>
-    </button>
+    <div className="orb-wrap">
+      <span className="orb-glow" aria-hidden="true" />
+      <button
+        ref={orbRef}
+        className={`status-orb${busy ? " status-orb-busy" : ""}`}
+        onClick={onClick}
+        disabled={busy}
+        aria-busy={busy}
+        title="Refresh now"
+        aria-label="Refresh"
+      >
+        <OrbIcon key={`${orbStyle}-${mood}`} style={orbStyle} mood={mood} />
+        <span className="orb-refresh" aria-hidden="true">
+          <Icon name="restart" size={32} strokeWidth={3.2} />
+        </span>
+      </button>
+    </div>
   );
 }
 
 export function StatusHero({
   snapshot,
   onRefresh,
-  onAddList,
   onOpenSettings,
-  onResetConfig,
-  onEditOrder,
   updatePhase,
   downloadProgress,
   onDownload,
@@ -105,174 +131,94 @@ export function StatusHero({
 }: {
   snapshot: Snapshot | null;
   onRefresh: () => Promise<void>;
-  onAddList: () => void;
   onOpenSettings: () => void;
-  onResetConfig: () => void;
-  onEditOrder: () => void;
   updatePhase: UpdatePhase | null;
   downloadProgress: number;
   onDownload: () => void;
   onInstall: () => void;
 }) {
   const overall: Severity = snapshot?.overall ?? "green";
+  const cutOff = snapshot?.cut_off ?? false;
   const wan = snapshot?.wan ?? null;
   const failingList = snapshot?.lists.find((l) => l.all_down)?.name ?? null;
-  const copy = severityCopy(snapshot, overall, failingList, snapshot?.cut_off ?? false);
+  const copy = severityCopy(snapshot, overall, failingList, cutOff);
 
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [confirmReset, setConfirmReset] = useState(false);
-  const [resetBusy, setResetBusy] = useState(false);
-  const [theme, cycleTheme] = useTheme();
-  // Spin/pulse while any probe is in flight (startup or manual refresh).
-  const busy =
-    snapshot === null ||
-    snapshot.lists.some((l) => l.services.some((s) => s.state === "checking"));
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    function handleClick(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false);
-        setConfirmReset(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [menuOpen]);
-
-  function pick(action: () => void) {
-    setMenuOpen(false);
-    setConfirmReset(false);
-    action();
-  }
-
-  function handleReset() {
-    setResetBusy(true);
-    pick(onResetConfig);
-  }
+  // Gray + pulse while a round of probes is in flight (startup, refresh, a network change). That is
+  // exactly an unsettled snapshot. Re-checking one site by clicking its name marks only that row
+  // Checking and leaves the snapshot settled, so the hero keeps its real status meanwhile.
+  const busy = snapshot === null || !snapshot.settled;
+  const mood = moodOf(snapshot, overall, busy, cutOff);
+  const heroRef = useRef<HTMLElement>(null);
 
   return (
-    <header className={`hero hero-${overall}`}>
+    <header ref={heroRef} className={`hero hero-${mood}`}>
       <div className="hero-bar">
-        <div className="hero-menu-wrap" ref={menuRef}>
-          <button
-            className="icon-btn"
-            onClick={() => setMenuOpen((o) => !o)}
-            title="Menu"
-            aria-haspopup="true"
-            aria-expanded={menuOpen}
-          >
-            <Icon name="menu" />
-          </button>
-          {menuOpen && (
-            <div className="menu-dropdown">
-              {confirmReset ? (
-                <>
-                  <div className="menu-confirm-label">Reset to defaults?</div>
-                  <button
-                    className="menu-item menu-danger"
-                    onClick={handleReset}
-                    disabled={resetBusy}
-                  >
-                    Yes, reset
-                  </button>
-                  <button
-                    className="menu-item"
-                    onClick={() => setConfirmReset(false)}
-                  >
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button className="menu-item" onClick={() => pick(onAddList)}>
-                    <Icon name="plus" size={14} />
-                    <span>Add list</span>
-                  </button>
-                  <button className="menu-item" onClick={() => pick(onEditOrder)}>
-                    <Icon name="grip" size={14} />
-                    <span>Edit order</span>
-                  </button>
-                  <button
-                    className="menu-item"
-                    onClick={() => pick(onOpenSettings)}
-                  >
-                    <Icon name="monitor" size={14} />
-                    <span>Settings</span>
-                  </button>
-                  <button
-                    className="menu-item"
-                    onClick={() => cycleTheme()}
-                    title="Cycle theme"
-                  >
-                    <Icon name={THEME_ICON[theme]} size={14} />
-                    <span>Theme: {THEME_LABEL[theme]}</span>
-                  </button>
-                  <div className="menu-divider" />
-                  <button
-                    className="menu-item menu-danger"
-                    onClick={() => setConfirmReset(true)}
-                  >
-                    <Icon name="x" size={14} />
-                    <span>Reset to defaults</span>
-                  </button>
-                </>
-              )}
-            </div>
-          )}
+        <div className="hero-brand">
+          <span className="logo-mark">
+            <Canary size={34} />
+          </span>
+          <span className="hero-brand-name">Qanary</span>
         </div>
-
-        <StatusButton severity={overall} busy={busy} onClick={onRefresh} />
+        <button
+          className="hero-gear"
+          onClick={onOpenSettings}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <Icon name="settings" size={18} strokeWidth={1.8} />
+        </button>
       </div>
 
-      <div className="hero-center">
-        <span className="logo-mark">
-          <Canary size={50} />
-        </span>
+      <div className="hero-main">
         <div className="hero-copy">
           <div className="hero-headline">{copy.head}</div>
           <div className="hero-sub">{copy.sub}</div>
-        </div>
-      </div>
 
-      <div className="hero-footer">
-        <div
-          className="wan"
-          title={
-            wan ? `${wan.country_name} (${wan.country_code})` : "WAN unknown"
-          }
-        >
-          {wan ? (
-            <>
-              <span className="flag">{wan.flag_emoji || "🏳️"}</span>
-              <span className="wan-cc">{wan.country_code || "??"}</span>
-              <span className="wan-ip">{wan.ip}</span>
-            </>
-          ) : (
-            <span className="wan-ip">—</span>
-          )}
+          <div className="hero-footer">
+            <div
+              className="wan"
+              title={
+                wan ? `${wan.country_name} (${wan.country_code})` : "WAN unknown"
+              }
+            >
+              {wan ? (
+                <>
+                  <span className="flag">{wan.flag_emoji || "🏳️"}</span>
+                  <span className="wan-cc">{wan.country_code || "??"}</span>
+                  <i className="wan-sep" aria-hidden="true" />
+                  <span className="wan-ip">{wan.ip}</span>
+                </>
+              ) : (
+                <span className="wan-ip">—</span>
+              )}
+            </div>
+
+            {updatePhase === "available" && (
+              <button className="update-btn" data-phase="available" onClick={onDownload}>
+                <Icon name="download" size={15} strokeWidth={3.3} />
+                <span className="update-btn-text">Update</span>
+              </button>
+            )}
+            {updatePhase === "downloading" && (
+              <button
+                className="update-btn"
+                data-phase="downloading"
+                disabled
+                style={{ "--pct": `${downloadProgress}%` } as React.CSSProperties}
+              >
+                <span className="update-btn-text">Downloading…</span>
+              </button>
+            )}
+            {updatePhase === "ready" && (
+              <button className="update-btn" data-phase="ready" onClick={onInstall}>
+                <Icon name="restart" size={15} strokeWidth={3.2} />
+                <span className="update-btn-text">Restart</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        {updatePhase === "available" && (
-          <button className="update-btn" onClick={onDownload}>
-            Update
-          </button>
-        )}
-        {updatePhase === "downloading" && (
-          <button
-            className="update-btn update-btn-progress"
-            disabled
-            style={{ "--pct": `${downloadProgress}%` } as React.CSSProperties}
-          >
-            Downloading…
-          </button>
-        )}
-        {updatePhase === "ready" && (
-          <button className="update-btn update-btn-ready" onClick={onInstall}>
-            Restart
-          </button>
-        )}
+        <StatusOrb mood={mood} busy={busy} heroRef={heroRef} onClick={onRefresh} />
       </div>
     </header>
   );
