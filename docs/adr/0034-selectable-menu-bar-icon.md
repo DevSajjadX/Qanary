@@ -1,6 +1,6 @@
 # 0034. The menu-bar icon has four selectable looks and an Offline state (first backend change in the Glass PR)
 
-- **Status:** accepted
+- **Status:** accepted; palette and Offline picture superseded by ADR-0043; the four-look setting superseded by ADR-0044 (the status icon plus Outline/Filled)
 - **Date:** 2026-10-01
 - **Deciders:** Sajjad (DevSajjadX)
 

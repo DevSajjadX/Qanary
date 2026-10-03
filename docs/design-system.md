@@ -16,14 +16,16 @@ goes `all_down`. The whole window has a *mood*, and you feel it before you read 
 
 The mood is one color, `--sev`. It tints the logo's eye, the orb, and a soft glow
 behind the orb. Shape and motion say it too, so color is never the only signal.
+The moods keep the pre-Glass (v0.6.5) status palette, `--mood-*` in `tokens.css`; offline,
+which v0.6.5 didn't have, takes the gray (ADR-0043).
 
 | Mood | When | `--sev` | Orb rings | Motion |
 |---|---|---|---|---|
-| ok | Severity green | `--state-up` | 3 solid | pop + ripple on arrival |
-| warn | Severity yellow (a non-critical List is `all_down`) | `--state-blocked` | 2 faded + "!" | pop + ripple |
-| alarm | Severity red (a critical List is `all_down`) | `--state-down` | 3 dashed | shake on arrival, logo blinks |
-| offline | `cut_off` (nothing reachable at all) | `--state-offline` | 3 dashed + slash | shake on arrival |
-| busy | any service still `checking` | `--state-checking` | 3 solid, rippling outward | ripples until done |
+| ok | Severity green | `--mood-ok` | 3 solid | pop + ripple on arrival |
+| warn | Severity yellow (a non-critical List is `all_down`) | `--mood-warn` | 2 faded + "!" | pop + ripple |
+| alarm | Severity red (a critical List is `all_down`) | `--mood-alarm` | 3 dashed | shake on arrival, logo blinks |
+| offline | `cut_off` (nothing reachable at all) | `--mood-offline` (gray) | Wi-Fi off: 3 dashed arcs + dot + slash | shake on arrival; orb can't be clicked |
+| busy | any service still `checking` | `--mood-busy` (yellow) | 3 solid, rippling outward | ripples until done |
 | idle | no lists / no services | `--state-checking` | 3 solid | — |
 
 `StatusHero` derives the mood in `moodOf()`; the headline copy (`severityCopy()`) is
@@ -32,16 +34,17 @@ separate and unchanged.
 ### Two icon styles (the orb)
 
 The orb draws the mood one of two ways; the user picks in **Settings → Appearance → Status
-icon** ([ADR-0033](adr/0033-selectable-orb-icon-style.md)). Color, glow and arrival motion are shared; only
-the icon differs. Definitions: [`orbIcons.tsx`](../src/components/orbIcons.tsx); choice:
-[`orbStyle.ts`](../src/orbStyle.ts) (`localStorage`).
+icon** ([ADR-0033](adr/0033-selectable-orb-icon-style.md)), and the menu-bar icon follows the
+same choice ([ADR-0044](adr/0044-one-status-icon-setting-for-orb-and-menu-bar.md)). Color, glow and
+arrival motion are shared; only the icon differs. Definitions:
+[`orbIcons.tsx`](../src/components/orbIcons.tsx); choice: `status_icon` in the config, applied on Save.
 
 | Mood | Rings (default) | Pulse |
 |---|---|---|
 | ok | 3 solid rings, breathing | ECG line, a soft light runs along the wave |
 | warn | 2 faded rings + "!"; the dashed ring turns, the "!" blinks | shallower beat, a faster light |
-| alarm | 3 dashed rings, a double heartbeat | a 20 s story: the beat stutters and drains away, then the dashed line crawls with the X for ~17 s |
-| offline | alarm rings + slash; rings sink, slash fades | dashed line (crawling, ends fade) struck through; the slash blinks |
+| alarm | 3 dashed rings, a double heartbeat | a 20 s story, entered on the dead line: the dashed line crawls with the X for ~17 s, then the beat returns, stutters and drains away |
+| offline | Wi-Fi off (same icon); arcs sink, slash fades | Wi-Fi off (same icon, Pulse's 2px stroke); arcs sink, slash fades |
 | busy | rings ripple outward, fast | trace with a faster light |
 | idle | 3 solid rings | quiet flat line |
 
@@ -51,19 +54,24 @@ stops it (Pulse Alarm then shows just the dashed line and the X).
 ### The menu-bar icon (tray)
 
 Same two pictures as the orb, drawn in Rust ([`tray.rs`](../src-tauri/src/tray.rs)) and redrawn as
-SVG for the picker ([`trayIcons.tsx`](../src/components/trayIcons.tsx)). Four looks: **Rings**,
-**Pulse** (heartbeat in a rounded-square outline), and a **filled** version of each (the picture cut
-out of a colored rounded square). Every look has five states:
+SVG for the picker ([`trayIcons.tsx`](../src/components/trayIcons.tsx)). The picture is the orb's
+`status_icon` (**Rings**, or **Pulse**: a heartbeat in a rounded-square outline); **Settings →
+Appearance → Menu bar** picks **Outline** or **Filled** (`tray_filled`: the picture cut out of a
+colored rounded square). It shows what the orb shows, in the orb's `--mood-*` colors (a
+Rust test checks them against `tokens.css`). Every look has five states:
 
 | State | Color | Rings | Pulse |
 |---|---|---|---|
-| all clear | `--state-up` | 3 solid rings | heartbeat |
-| heads up | `--state-blocked` | 2 rings + "!" | shallower beat |
-| alarm | `--state-down` | 3 dashed rings (filled looks: 2, coarser) | dashed flat line + X |
-| offline | `--state-offline` | alarm + slash | dashed flat line + slash |
-| checking | `--state-checking` | breathes | breathes |
+| all clear | `--mood-ok` | 3 solid rings | heartbeat |
+| heads up | `--mood-warn` | 2 rings + "!" | shallower beat |
+| alarm | `--mood-alarm` | 3 dashed rings (filled looks: 2, coarser) | dashed flat line + X |
+| offline | `--mood-offline` (gray) | Wi-Fi off: 3 dashed arcs + dot + slash | the same Wi-Fi off (no frame) |
+| checking | `--mood-busy` | all clear's picture, breathing | all clear's picture, breathing |
 
-The icon is 44 px (macOS shows it 18 pt tall). Stored as `tray_style` in the config, not per device.
+Checking lasts the whole probe round: the icon breathes until the snapshot is `settled`, the same
+flag that keeps the in-app orb busy, so a result landing mid-round never flashes a stale state.
+
+The icon is 44 px (macOS shows it 18 pt tall). Stored as `status_icon` + `tray_filled` in the config, not per device.
 
 The right-click menu lists every list first — a coloured dot and `name · 4/5` / `All unreachable`,
 same wording and dot colours as above — then Show / Hide, Refresh now, Quit
@@ -86,11 +94,12 @@ whole pitch is identity, and amber-orange still reads "interference". See ADR-00
 
 - **green** — all clear.
 - **yellow** (warn) — a non-critical List is `all_down`; the orb tints to the amber
-  `--state-blocked` (there is no separate yellow token).
+  `--mood-warn`.
 - **red** (alarm) — a **critical** List is `all_down`.
 
-`--sev-green`/`--sev-red` alias the up/down states. Offline is separate from red: it has
-its own deeper crimson so "you have no network" and "a critical list is down" read apart.
+`--sev-green`/`--sev-red` alias the up/down states. On the orb and the tray icon, offline is gray,
+not red, so "you have no network" and "a critical list is down" read apart; rows keep
+`--state-offline`.
 
 ## Shared surfaces (one look everywhere)
 
@@ -101,9 +110,10 @@ them; it does not invent its own gradient.
 | Variable | Used by |
 |---|---|
 | `--card-bg` / `--card-border` / `--card-shadow` | list cards, Settings cards, changelog cards — a faint gradient, a lit top edge, a soft lift. Almost opaque (so the orb's glow does not tint one card only) |
-| `--btn-bg` / `--btn-border` / `--btn-shadow` | secondary buttons (Settings, dialog Cancel, Check now, **Add list / Edit order** — still dashed), the IP chip, the gear, the Critical-switch row |
+| `--btn-bg` / `--btn-border` / `--btn-shadow` | secondary buttons (Settings, dialog Cancel, Check now), the IP chip, the hero ☰ and its drawer, the Critical-switch row |
 | `--brand-btn-bg` / `--brand-btn-shadow` | primary yellow buttons: Save, Update, Install, Done |
-| `--danger-btn-bg` / `--danger-btn-shadow` | the destructive confirm (the red of a down Critical badge) |
+| `--switch-on` | every switch's "on" track: v0.6.5's flat `#ffcc00`, on the v0.6.5 36×20 switch ([ADR-0046](adr/0046-switches-are-gold-when-on.md)) |
+| `--danger-btn-bg` / `--danger-btn-shadow` | the destructive confirm (the red of a down Critical list's name chip) |
 | `--noise` | the fine grain on the window |
 
 Other shared looks, in the same file: **status dots** are glowing beads (the dot on a site tile has a
@@ -120,7 +130,7 @@ All tokens live in [`src/tokens.css`](../src/tokens.css). Two classes:
 
 - **Constant** — `--state-*`, `--sev-*`, `--brand-*`, type/spacing/radii. Identical
   in light and dark. A green dot means one thing everywhere in the app. (The tray icon
-  is drawn in Rust with the same values — [ADR-0034](adr/0034-selectable-menu-bar-icon.md).)
+  is drawn in Rust with the orb's `--mood-*` values — [ADR-0043](adr/0043-orb-keeps-the-pre-glass-status-colors.md).)
 - **Adaptive** — chrome layers, glass surfaces, text, border, `--elevation`. Wrapped
   in CSS `light-dark()` so each is one line and resolves per theme automatically.
 
@@ -133,7 +143,10 @@ All tokens live in [`src/tokens.css`](../src/tokens.css). Two classes:
 | `--state-blocked` | `#ff9a3d` | (same) | `blocked` — interception/interference; Severity yellow |
 | `--state-down` | `#ff5a52` | (same) | `down`, Severity red |
 | `--state-offline` | `#b8123f` | (same) | `cut_off` — no network at all |
-| `--state-checking` | `#8b93a3` | (same) | in-flight; busy / idle orb |
+| `--state-checking` | `#8b93a3` | (same) | in-flight; idle orb |
+| `--mood-ok` / `--mood-warn` / `--mood-alarm` | `#1a9c61` / `#f2792b` / `#e03131` | (same) | orb and tray moods (v0.6.5 palette, green darkened) |
+| `--mood-busy` | `#e6b400` | (same) | orb and tray while checking (v0.6.5's brand yellow, darkened) |
+| `--mood-offline` | `--state-checking` | (same) | orb when `cut_off` |
 | `--brand` | `#ffd23f` | (same) | canary yellow — identity only, never a status |
 | `--brand-ink` | `#3d2e00` | (same) | **required** text color on `--brand` fills |
 | `--brand-press` | `#e6bb2e` | (same) | pressed/active brand fills |
@@ -169,12 +182,12 @@ beak (constant amber `#f2792b`) and the status-orb and button gradients.
 | Component | File | Notes |
 |---|---|---|
 | **Canary** | [`Canary.tsx`](../src/components/Canary.tsx) | The brandmark SVG bird. The **eye is the live status light** — `currentColor` = `--sev`, so it cross-fades with the mood. |
-| **StatusHero** | [`StatusHero.tsx`](../src/components/StatusHero.tsx) | Logo + settings gear; headline, subtitle, IP chip and update button on the left; the **orb** (`StatusOrb`) on the right. The orb is the refresh button: its icon (Rings or Pulse) carries the mood, hover shows a refresh arrow, busy pulses. The soft glow is a child of the orb wrapper. |
-| **orbIcons** | [`orbIcons.tsx`](../src/components/orbIcons.tsx) | `ORB_ICON[style][mood]`, `OrbIcon`, and `OrbThumb` (the live sample in Settings). |
-| **ServiceList** | [`ServiceList.tsx`](../src/components/ServiceList.tsx) | The list card. Fixed gray name chip · Critical badge · `n/m` or **All unreachable** · add · ⋯ menu · collapse chevron. Rows animate open/closed ([`useCollapsible`](../src/components/useCollapsible.ts)). Drives drag reordering of its services (inner `DndContext`). |
-| **ServiceRow** | [`ServiceRow.tsx`](../src/components/ServiceRow.tsx) | Favicon tile with letter fallback and a corner status dot · name + host · latency · boxed **Blocked**/**Down**. Multi-endpoint rows show `7 ● · 4 ●` and expand on a click anywhere on the row. ⋮ menu; a grip replaces the tile in reorder mode. |
+| **StatusHero** | [`StatusHero.tsx`](../src/components/StatusHero.tsx) | Logo, then the ☰ (`HeroMenu`, `.hero-btn`), which grows a glass drawer to its left with Add list, Edit order and Settings, each named in a tip on hover; headline, subtitle, IP chip and update button on the left; the **orb** (`StatusOrb`) on the right. The orb is the refresh button: its icon (Rings or Pulse) carries the mood, hover shows a refresh arrow (`OrbRefresh`, drawn in the orb icons' frame and stroke at 0.85 opacity), busy pulses. The soft glow is a child of the orb wrapper. |
+| **orbIcons** | [`orbIcons.tsx`](../src/components/orbIcons.tsx) | `ORB_ICON[style][mood]`, `OrbIcon`, `OrbRefresh` (the hover arrow) and `OrbThumb` (the live sample in Settings). |
+| **ServiceList** | [`ServiceList.tsx`](../src/components/ServiceList.tsx) | The list card. Gray name chip (a green shield inside it marks a healthy Critical list). Fully down, the chip takes a soft red tint with a thin, slowly breathing ring; a Critical list's turns solid red and pulses instead · `n/m` or **All unreachable** · add · ⋯ menu · collapse chevron. Rows animate open/closed ([`useCollapsible`](../src/components/useCollapsible.ts)). Drives drag reordering of its services (inner `DndContext`). |
+| **ServiceRow** | [`ServiceRow.tsx`](../src/components/ServiceRow.tsx) | Favicon tile with letter fallback and a corner status dot · name + host · latency · **Blocked**/**Down**/*TCP only* as plain text in their state color (same weight as the latency). Multi-endpoint rows show `7 ● · 4 ●` and expand on a click anywhere on the row. ⋮ menu; a grip replaces the tile in reorder mode. |
 | **Icon** | [`Icon.tsx`](../src/components/Icon.tsx) | Inline SVG icon set (`strokeWidth` prop). |
-| **Settings / ListModal / ServiceModal** | resp. files | Glass dialogs. Settings groups are glass cards with small-caps headings; toggles are switches (the alert checkboxes are real checkboxes drawn as switches). The **volume slider is the original native range input**, deliberately kept. Theme, Status icon and Reset to defaults live here. |
+| **Settings / ListModal / ServiceModal** | resp. files | Glass dialogs. Settings groups are glass cards with small-caps headings; toggles are switches (the alert checkboxes are real checkboxes drawn as switches). The **volume slider is the original native range input**, deliberately kept. Theme, the status icon (Rings / Pulse, plus the menu bar's Outline / Filled, as two segmented rows) and Reset to defaults live here. |
 | **ChangelogModal** | [`ChangelogModal.tsx`](../src/components/ChangelogModal.tsx) | Renders bundled CHANGELOG on update. |
 | **Switch** | [`Switch.tsx`](../src/components/Switch.tsx) | Toggle primitive. |
 
@@ -183,12 +196,12 @@ Theming is the `useTheme` hook, not a `ThemeProvider` component.
 ### Status dots and badges
 
 Every status color comes from one rule: an element with `data-state="up|reachable|blocked|down|checking"`
-gets `--c`, which the avatar's corner dot, the boxed badge and the count dots all read. While
+gets `--c`, which the avatar's corner dot, the Blocked/Down label and the count dots all read. While
 `cut_off`, `reachable`/`blocked`/`down` all resolve to `--state-down` (ADR-0024) and the lists are muted.
 
 - **Corner dot** — on the service tile, rings the card color so it looks cut out. `checking` pulses.
-- **Badge** — only `blocked` and `down` get a box; `up`, `reachable` (shows "TCP only") and
-  `checking` stay quiet.
+- **Label** — no boxes: `blocked` / `down` show their name and `reachable` shows "TCP only", each
+  as plain text in its state color; `up` shows gray latency, `checking` shows *Pinging…*.
 - **Count dots** (`7 ● · 4 ●`) and the endpoint sub-list use the same colors.
 
 State is color + position + a text label for the two states that matter; there is no glyph layer.
@@ -197,9 +210,9 @@ State is color + position + a text label for the two states that matter; there i
 
 Everything respects `prefers-reduced-motion`. The vocabulary is small:
 
-- **Orb**: pop + ripple + flash when the mood changes (shake for alarm/offline), then each state's own slow motion (table above, [ADR-0038](adr/0038-orb-motion-in-every-state.md)); fast ripples while busy. Pulse style draws one gradient line (faded at both ends) with a soft light that runs along the wave — slow along the flat stretches, fast through the beat, then out past the end and a rest off the line. Pulse Alarm is a 20 s loop (a failing heartbeat, then a crawling dead line with the X); Offline's dashes drift and its slash blinks.
+- **Orb**: pop + ripple + flash when the mood changes (shake for alarm/offline), then each state's own slow motion (table above, [ADR-0038](adr/0038-orb-motion-in-every-state.md)); fast ripples while busy. Pulse style draws one gradient line (faded at both ends) with a soft light that runs along the wave — slow along the flat stretches, fast through the beat, then out past the end and a rest off the line. Pulse Alarm is a 20 s loop (a failing heartbeat, then a crawling dead line with the X). Offline is the same Wi-Fi-off icon in both styles, and the orb is disabled: with no network on the machine a refresh can't help, and the scheduled checks carry on.
 - **List names**: a name too long for its chip ends in an ellipsis and, on hover, glides to its last letter with a transform (sub-pixel, no jitter) and eases back ([ADR-0039](adr/0039-list-name-glide-uses-a-transform.md)).
-- **Pulse** (`pulse-ring` / `pulse-icon`): the "look at me" motion, shared by a down Critical badge and
+- **Pulse** (`pulse-ring` / `pulse-icon`): the "look at me" motion, shared by a down Critical list's name chip and
   a ready update button.
 - **Collapse**: one 300ms grid-rows tween plus a calm 200ms chevron rotation. No spring.
 
@@ -212,30 +225,44 @@ added if a denser view is wanted. Sparklines and uptime% are **not** — they ne
 
 ```
 ╭──────────────────────────────────────────────╮
-│ 🐦 Qanary                                ⚙   │  ← eye = mood color
+│ 🐦 Qanary                            ＋  ⚙   │  ← eye = mood color
 │                                    ░░░░░░    │
 │ All clear                         ░( ◎ )░░   │  ← orb = refresh; glow fades by the
 │ Everything's reachable.            ░░░░░░    │    middle of the first list
 │ 🇩🇪 DE │ 203.0.113.42   [↓ Update]            │
 ╰──────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────╮
-│ ⌜🌐 Global⌝  ⌜🛡 Critical⌝  7/7   +   ⋯   ⌄ │
+│ ⌜🌐 Global 🛡⌝              7/7   +   ⋯   ⌄ │
 │  G● Google · 2● · 1●                 ⌄    ⋮ │
 │  T● Telegram  telegram.org   20 ms        ⋮ │
 │  X● X  x.com   64 ms   [Blocked]          ⋮ │
 ╰──────────────────────────────────────────────╯
- [ ＋ Add list ]   [ ⇅ Edit order ]
 ```
 
-When a list is fully down its count becomes **All unreachable**, its Critical badge turns solid
-red and pulses, and the rows show boxed **Down**.
+Add list, Edit order and Settings are in the hero's ☰ drawer; Edit order is also in each list's ⋯
+menu. On macOS the app menu has them too (File › New list ⌘N, File › Edit order ⇧⌘O,
+Qanary › Settings… ⌘,; a second ⇧⌘O ends ordering), plus View › Refresh now ⌘R for the orb
+([ADR-0045](adr/0045-add-list-in-the-hero-and-a-native-app-menu.md),
+[ADR-0047](adr/0047-hero-actions-in-a-menu-drawer-and-refresh-in-the-app-menu.md)).
+
+Wider windows put lists side by side, masonry style: as many 360px+ columns as fit (never more
+than there are lists), and each list, in order, goes under the shortest column so a short list never
+leaves a hole beside a tall one. Height is estimated from the service count, so opening or
+collapsing a list never moves cards between columns. The content (hero and lists) is one centered block only as wide as its columns, each at most 480px: a full-screen window
+shows the cards centered, not stretched. Edit order always uses one column, and each list keeps its
+collapse chevron there, so long lists can be folded to move them. The numbers live in
+[`utils/listColumns.ts`](../src/utils/listColumns.ts); App.tsx hands them to the CSS as custom
+properties. The header's narrow layout keys off the card's own width (a container query).
+
+When a list is fully down its count becomes **All unreachable**, its name chip tints red with a
+slow, faint ring (a Critical list's turns solid red and pulses, shield included), and the rows show **Down**.
 
 ## Scales down (widget / tray)
 
 Personality lives in color + the single Canary mark, not in layout, so it survives shrinking:
 
 - **Tray** — shipped ([ADR-0008](adr/0008-tray-icon-runtime-severity-light.md)). The menubar icon
-  carries the severity light, rendered at runtime from the same Severity the hero uses, in the Glass
-  `--state-*` colors, with the Offline state (cut-off) too. Four looks, picked in **Settings →
-  System → Menu bar icon** ([ADR-0034](adr/0034-selectable-menu-bar-icon.md)); see below.
+  carries the severity light, rendered at runtime from the same Severity the hero uses, in the orb's
+  `--mood-*` colors, with the Offline state (cut-off) too. The orb's icon, Outline or Filled, picked in **Settings →
+  Appearance** ([ADR-0044](adr/0044-one-status-icon-setting-for-orb-and-menu-bar.md)); see below.
 - **Widget** — still later. Plan: compact Canary + one-line SeverityCopy + a strip of state chips.

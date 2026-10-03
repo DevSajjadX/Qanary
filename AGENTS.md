@@ -28,6 +28,7 @@ pnpm test                      # frontend (vitest) + backend (cargo)
 pnpm test:ui                   # frontend only — vitest run (jsdom)
 pnpm test:rust                 # backend only — cargo test
 pnpm test:e2e                  # Playwright e2e vs pnpm dev (port 1420)
+pnpm dev                       # then http://localhost:1420/?mock (or ?mock=ok, ?mock=down, ?mock=critical, ?mock=offline): UI on canned data, no Tauri
 ```
 
 ## Testing
@@ -37,9 +38,10 @@ pnpm test:e2e                  # Playwright e2e vs pnpm dev (port 1420)
   component tests that render the real tree against a mocked `./api` (`src/App.test.tsx`).
   No Tauri runtime needed — `vi.mock("./api")` stands in for the `invoke` bridge.
 - **Frontend e2e** (`pnpm test:e2e`): Playwright drives `pnpm dev` (port 1420) in headless
-  system Chrome (`channel: "chrome"` — no `playwright install`). The Tauri IPC bridge is mocked
-  via a minimal inline `window.__TAURI_INTERNALS__` shim injected by `page.addInitScript` before page load. Covers: initial render, refresh,
-  add-list, settings, Config card, a list reorder surviving the next `service-update`.
+  system Chrome (`channel: "chrome"` — no `playwright install`). The Tauri IPC bridge is the app's
+  own dev mock (`src/dev/mockTauri.ts`, ADR-0042): fixtures open `/?mock` and hand it data as
+  `window.__MOCK__`. Covers: initial render, refresh,
+  add-list, settings, Config card, a list reorder surviving the next `service-update`, list columns across window widths.
   Native WKWebView (the actual app) still can't be WebDriver-driven on macOS — e2e targets the
   web frontend served by Vite, not the bundled native binary.
 - **Self-verify before declaring done.** After touching frontend code, run `pnpm test:ui`
@@ -49,13 +51,13 @@ pnpm test:e2e                  # Playwright e2e vs pnpm dev (port 1420)
 ## Env
 
 - Rust via rustup: cargo/rustc 1.96.0, toolchain stable-aarch64-apple-darwin.
-- Node v24.16.0, pnpm 11.4.0 (package manager; pinned via `packageManager` + `pnpm-workspace.yaml`). Xcode CLT present. brew at /opt/homebrew.
+- Node v24.16.0, pnpm 12.8.1 (package manager; pinned only by `packageManager`, which CI reads too; build settings in `pnpm-workspace.yaml`). Xcode CLT present. brew at /opt/homebrew.
 
 ## Conventions
 
 - User new to Rust → keep backend small + heavily commented.
 - Frontend subscribes to the `status-update` (full snapshot) and `service-update` (per-Service
-  delta) Tauri events (no polling).
+  delta) Tauri events (no polling), plus `menu-action` from the macOS app menu (ADR-0045).
 - Backend owns all probe/rollup/persistence logic; tray (later) reuses same snapshot.
 
 ## Every reply: scannable, ends with a status footer
@@ -85,7 +87,7 @@ always in this order:
 - Location: `docs/adr/` (in the project root, checked into git).
 - Template: `docs/adr/_TEMPLATE.md`.
 - Numbering: 4-digit zero-padded, continuing from highest existing file.
-- Current highest: 0039 (list-name glide uses a transform).
+- Current highest: 0047 (hero actions in a ☰ drawer; Refresh ⌘R in the app menu).
 
 ## TODO
 

@@ -1,6 +1,6 @@
 # 0033. The status orb has two selectable icon styles: Rings and Pulse
 
-- **Status:** accepted
+- **Status:** accepted; offline icon superseded by ADR-0043; the per-device `localStorage` choice superseded by ADR-0044 (one config setting for the orb and the menu bar)
 - **Date:** 2026-10-01
 - **Deciders:** Sajjad (DevSajjadX)
 

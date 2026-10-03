@@ -1,6 +1,6 @@
 # 0037. One glass look: shared surface variables, 3D beads and buttons
 
-- **Status:** accepted
+- **Status:** accepted; the Add list / Edit order bar superseded by ADR-0045 (+ beside the gear, native app menu); the switch look superseded by ADR-0046 (back to the v0.6.5 switch)
 - **Date:** 2026-10-02
 - **Deciders:** Sajjad (DevSajjadX)
 

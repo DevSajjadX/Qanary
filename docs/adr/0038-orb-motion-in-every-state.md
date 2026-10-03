@@ -1,6 +1,6 @@
 # 0038. Both orb styles move in every state
 
-- **Status:** accepted
+- **Status:** accepted; offline icon and where the Pulse Alarm loop starts superseded by ADR-0043
 - **Date:** 2026-10-02
 - **Deciders:** Sajjad (DevSajjadX)
 

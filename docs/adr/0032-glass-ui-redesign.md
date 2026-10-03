@@ -1,6 +1,6 @@
 # 0032. Glass UI redesign: frontend-only, orb-as-refresh, one mood color
 
-- **Status:** accepted
+- **Status:** accepted; Critical badge and boxed row labels superseded by ADR-0040; orb colors amended by ADR-0043
 - **Date:** 2026-10-01
 - **Deciders:** Sajjad (DevSajjadX) — agreed with Esi-Abolfazl outside GitHub before the PR
 
