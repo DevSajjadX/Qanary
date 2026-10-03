@@ -87,7 +87,7 @@ always in this order:
 - Location: `docs/adr/` (in the project root, checked into git).
 - Template: `docs/adr/_TEMPLATE.md`.
 - Numbering: 4-digit zero-padded, continuing from highest existing file.
-- Current highest: 0048 (a TCP-only endpoint never keeps a list up).
+- Current highest: 0050 (Offline is a Wi-Fi with a "!"; alarm and heads-up rings are dotted).
 
 ## TODO
 

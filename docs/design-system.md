@@ -24,7 +24,7 @@ which v0.6.5 didn't have, takes the gray (ADR-0043).
 | ok | Severity green | `--mood-ok` | 3 solid | pop + ripple on arrival |
 | warn | Severity yellow (a non-critical List is `all_down`) | `--mood-warn` | 2 faded + "!" | pop + ripple |
 | alarm | Severity red (a critical List is `all_down`) | `--mood-alarm` | 3 dashed | shake on arrival, logo blinks |
-| offline | `cut_off` (nothing reachable at all) | `--mood-offline` (gray) | Wi-Fi off: 3 dashed arcs + dot + slash | shake on arrival; orb can't be clicked |
+| offline | `cut_off` (nothing reachable at all) | `--mood-offline` (gray) | Wi-Fi with a "!": 3 bold solid arcs, the Wi-Fi's dot is the "!"'s dot, a soft shadow cut around the "!" | shake on arrival; orb can't be clicked |
 | busy | any service still `checking` | `--mood-busy` (yellow) | 3 solid, rippling outward | ripples until done |
 | idle | no lists / no services | `--state-checking` | 3 solid | — |
 
@@ -44,7 +44,7 @@ arrival motion are shared; only the icon differs. Definitions:
 | ok | 3 solid rings, breathing | ECG line, a soft light runs along the wave |
 | warn | 2 faded rings + "!"; the dashed ring turns, the "!" blinks | shallower beat, a faster light |
 | alarm | 3 dashed rings, a double heartbeat | a 20 s story, entered on the dead line: the dashed line crawls with the X for ~17 s, then the beat returns, stutters and drains away |
-| offline | Wi-Fi off (same icon); arcs sink, slash fades | Wi-Fi off (same icon, Pulse's 2px stroke); arcs sink, slash fades |
+| offline | Wi-Fi with a "!" (same icon); the arcs switch on one by one, hold, then all go dark; the "!" stays still | the same |
 | busy | rings ripple outward, fast | trace with a faster light |
 | idle | 3 solid rings | quiet flat line |
 
@@ -54,24 +54,27 @@ stops it (Pulse Alarm then shows just the dashed line and the X).
 ### The menu-bar icon (tray)
 
 Same two pictures as the orb, drawn in Rust ([`tray.rs`](../src-tauri/src/tray.rs)) and redrawn as
-SVG for the picker ([`trayIcons.tsx`](../src/components/trayIcons.tsx)). The picture is the orb's
-`status_icon` (**Rings**, or **Pulse**: a heartbeat in a rounded-square outline); **Settings →
-Appearance → Menu bar** picks **Outline** or **Filled** (`tray_filled`: the picture cut out of a
-colored rounded square). It shows what the orb shows, in the orb's `--mood-*` colors (a
-Rust test checks them against `tokens.css`). Every look has five states:
+SVG for the picker ([`trayIcons.tsx`](../src/components/trayIcons.tsx)). The picture is **Rings**, or
+**Pulse** (a heartbeat in a rounded-square outline), drawn bare (Outline) or cut out of a colored
+rounded square (Filled, `tray_filled`). **Settings → Appearance → Menu bar** is a dropdown of three
+pictures ([ADR-0049](adr/0049-menu-bar-icon-can-differ-from-the-orb.md)): **Same as app** (follows the
+orb's picture), **Pulse** and **Rings** (their own picture whatever the orb shows; `tray_shape`), with a
+**Filled menubar icons** switch under it that turns the filled look on or off for whichever picture is chosen. It
+shows what the orb shows, in the orb's `--mood-*` colors (a Rust test checks them against
+`tokens.css`). Every look has five states:
 
 | State | Color | Rings | Pulse |
 |---|---|---|---|
 | all clear | `--mood-ok` | 3 solid rings | heartbeat |
-| heads up | `--mood-warn` | 2 rings + "!" | shallower beat |
-| alarm | `--mood-alarm` | 3 dashed rings (filled looks: 2, coarser) | dashed flat line + X |
-| offline | `--mood-offline` (gray) | Wi-Fi off: 3 dashed arcs + dot + slash | the same Wi-Fi off (no frame) |
+| heads up | `--mood-warn` | 2 rings (the outer one dotted) + "!" | shallower beat |
+| alarm | `--mood-alarm` | 3 dotted rings (filled looks: 2, coarser) | a dead line of dots, two each side of the X |
+| offline | `--mood-offline` (gray) | Wi-Fi with a "!" (3 solid round-ended arcs, a gap cut around the "!"), inside a plain outer ring | the same Wi-Fi, shrunk to sit inside the rounded square ([ADR-0050](adr/0050-offline-is-a-wifi-with-a-bang.md)) |
 | checking | `--mood-busy` | all clear's picture, breathing | all clear's picture, breathing |
 
 Checking lasts the whole probe round: the icon breathes until the snapshot is `settled`, the same
 flag that keeps the in-app orb busy, so a result landing mid-round never flashes a stale state.
 
-The icon is 44 px (macOS shows it 18 pt tall). Stored as `status_icon` + `tray_filled` in the config, not per device.
+The icon is 44 px (macOS shows it 18 pt tall). Stored as `status_icon` + `tray_shape` + `tray_filled` in the config, not per device.
 
 The right-click menu lists every list first — a coloured dot and `name · 4/5` / `All unreachable`,
 same wording and dot colours as above — then Show / Hide, Refresh now, Quit
@@ -187,7 +190,7 @@ beak (constant amber `#f2792b`) and the status-orb and button gradients.
 | **ServiceList** | [`ServiceList.tsx`](../src/components/ServiceList.tsx) | The list card. Gray name chip (a green shield inside it marks a healthy Critical list). Fully down, the chip takes a soft red tint with a thin, slowly breathing ring; a Critical list's turns solid red and pulses instead · `n/m` or **All unreachable** · add · ⋯ menu · collapse chevron. Rows animate open/closed ([`useCollapsible`](../src/components/useCollapsible.ts)). Drives drag reordering of its services (inner `DndContext`). |
 | **ServiceRow** | [`ServiceRow.tsx`](../src/components/ServiceRow.tsx) | Favicon tile with letter fallback and a corner status dot · name + host · latency · **Blocked**/**Down**/*TCP only* as plain text in their state color (same weight as the latency). Multi-endpoint rows show `7 ● · 4 ●` and expand on a click anywhere on the row. ⋮ menu; a grip replaces the tile in reorder mode. |
 | **Icon** | [`Icon.tsx`](../src/components/Icon.tsx) | Inline SVG icon set (`strokeWidth` prop). |
-| **Settings / ListModal / ServiceModal** | resp. files | Glass dialogs. Settings groups are glass cards with small-caps headings; toggles are switches (the alert checkboxes are real checkboxes drawn as switches). The **volume slider is the original native range input**, deliberately kept. Theme, the status icon (Rings / Pulse, plus the menu bar's Outline / Filled, as two segmented rows) and Reset to defaults live here. |
+| **Settings / ListModal / ServiceModal** | resp. files | Glass dialogs. Settings groups are glass cards with small-caps headings; toggles are switches (the alert checkboxes are real checkboxes drawn as switches). The **volume slider is the original native range input**, deliberately kept. Theme, the status icon (Rings / Pulse as a segmented row, a "?" that shows what each state looks like, and the menu bar's dropdown) and Reset to defaults live here. |
 | **ChangelogModal** | [`ChangelogModal.tsx`](../src/components/ChangelogModal.tsx) | Renders bundled CHANGELOG on update. |
 | **Switch** | [`Switch.tsx`](../src/components/Switch.tsx) | Toggle primitive. |
 
@@ -210,7 +213,7 @@ State is color + position + a text label for the two states that matter; there i
 
 Everything respects `prefers-reduced-motion`. The vocabulary is small:
 
-- **Orb**: pop + ripple + flash when the mood changes (shake for alarm/offline), then each state's own slow motion (table above, [ADR-0038](adr/0038-orb-motion-in-every-state.md)); fast ripples while busy. Pulse style draws one gradient line (faded at both ends) with a soft light that runs along the wave — slow along the flat stretches, fast through the beat, then out past the end and a rest off the line. Pulse Alarm is a 20 s loop (a failing heartbeat, then a crawling dead line with the X). Offline is the same Wi-Fi-off icon in both styles, and the orb is disabled: with no network on the machine a refresh can't help, and the scheduled checks carry on.
+- **Orb**: pop + ripple + flash when the mood changes (shake for alarm/offline), then each state's own slow motion (table above, [ADR-0038](adr/0038-orb-motion-in-every-state.md)); fast ripples while busy. Pulse style draws one gradient line (faded at both ends) with a soft light that runs along the wave — slow along the flat stretches, fast through the beat, then out past the end and a rest off the line. Pulse Alarm is a 20 s loop (a failing heartbeat, then a crawling dead line with the X). Offline is the same Wi-Fi-with-a-"!" icon in both styles (its arcs switch on in turn), and the orb is disabled: with no network on the machine a refresh can't help, and the scheduled checks carry on.
 - **List names**: a name too long for its chip ends in an ellipsis and, on hover, glides to its last letter with a transform (sub-pixel, no jitter) and eases back ([ADR-0039](adr/0039-list-name-glide-uses-a-transform.md)).
 - **Pulse** (`pulse-ring` / `pulse-icon`): the "look at me" motion, shared by a down Critical list's name chip and
   a ready update button.
@@ -263,6 +266,6 @@ Personality lives in color + the single Canary mark, not in layout, so it surviv
 
 - **Tray** — shipped ([ADR-0008](adr/0008-tray-icon-runtime-severity-light.md)). The menubar icon
   carries the severity light, rendered at runtime from the same Severity the hero uses, in the orb's
-  `--mood-*` colors, with the Offline state (cut-off) too. The orb's icon, Outline or Filled, picked in **Settings →
-  Appearance** ([ADR-0044](adr/0044-one-status-icon-setting-for-orb-and-menu-bar.md)); see below.
+  `--mood-*` colors, with the Offline state (cut-off) too. Its look is picked in **Settings →
+  Appearance** ([ADR-0049](adr/0049-menu-bar-icon-can-differ-from-the-orb.md)); see below.
 - **Widget** — still later. Plan: compact Canary + one-line SeverityCopy + a strip of state chips.
