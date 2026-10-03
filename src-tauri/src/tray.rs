@@ -146,12 +146,15 @@ fn sd_round_rect(x: f32, y: f32, half: f32, corner: f32) -> f32 {
     (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - corner
 }
 
-/// A filled rounded-square plate behind the glyph; the glyph is cut out of it (transparent).
+/// A filled plate behind the glyph; the glyph is cut out of it (transparent). `corner == half` is
+/// a circle.
 struct Plate {
     half: f32,
     corner: f32,
 }
-const PLATE: Plate = Plate { half: 11.0, corner: 4.8 };
+/// Pulse sits on a rounded square, Rings on a circle.
+const PLATE_SQUARE: Plate = Plate { half: 11.0, corner: 4.8 };
+const PLATE_ROUND: Plate = Plate { half: 11.0, corner: 11.0 };
 
 /// The picture a style draws; `TrayStyle` adds whether it sits on a filled plate.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -316,11 +319,11 @@ fn filled_prims(glyph: Glyph, mood: Mood) -> Vec<Prim> {
             line(BANG, 1.7, 1.0, 0.72),
             Prim::Dot { x: 12.0, y: 14.6, r: 1.0, a: 1.0 },
         ],
-        // Two coarse dotted rings, not three: at this size three read as noise. Dash periods
-        // divide each circumference evenly (6 and 14 dots).
+        // The bare alarm's dotted rings with the outer one dropped, as holes in the plate. Same dot
+        // counts as the bare icon (5 and 10); the periods divide each circumference evenly.
         (Glyph::Rings, Mood::Alarm) => vec![
-            ring(3.0, 1.0, Some((0.4, 2.742))),
-            ring(7.4, 0.8, Some((0.4, 2.921))),
+            ring(3.0, 1.0, Some((0.5, 3.27))),
+            ring(6.4, 0.8, Some((0.5, 3.521))),
         ],
         (Glyph::Pulse, mood) => {
             let trace = |pts, a| line(pts, PULSE_W, a, 0.78);
@@ -439,7 +442,8 @@ fn checking_frame(style: TrayStyle, pulse: f32) -> tauri::image::Image<'static> 
 fn render(style: TrayStyle, mood: Mood, rgb: (u8, u8, u8), pulse: f32) -> tauri::image::Image<'static> {
     let (glyph, filled) = split(style);
     if filled {
-        draw_icon(&filled_prims(glyph, mood), rgb, pulse, Some(&PLATE))
+        let plate = if glyph == Glyph::Rings { &PLATE_ROUND } else { &PLATE_SQUARE };
+        draw_icon(&filled_prims(glyph, mood), rgb, pulse, Some(plate))
     } else {
         draw_icon(&prims(glyph, mood), rgb, pulse, None)
     }
@@ -736,8 +740,8 @@ mod tests {
     }
 
     /// Cut-off wins over the severity: a gray Wi-Fi whose first dot is the dot of a "!". Rings
-    /// keeps a plain outer ring around it, Pulse its rounded-square frame, and both filled looks
-    /// share one picture. The bar is solid on a bare icon and a hole in a filled one.
+    /// keeps a plain outer ring around it, Pulse its rounded-square frame, and the filled looks
+    /// put the same picture on a circle (Rings) or a rounded square (Pulse). The bar is solid on a bare icon and a hole in a filled one.
     #[test]
     fn offline_is_a_gray_wifi_with_a_bang_in_every_look() {
         for style in STYLES {
@@ -773,7 +777,7 @@ mod tests {
         assert_eq!(at(&rings, CENTER + FRAME_HALF, CENTER - FRAME_HALF + 2.0).3, 0, "and no frame");
         let off = |style| settled_icon(Severity::Red, true, style).rgba().to_vec();
         assert_ne!(off(TrayStyle::Rings), off(TrayStyle::Pulse), "the bare looks differ");
-        assert_eq!(off(TrayStyle::RingsFilled), off(TrayStyle::PulseFilled), "the filled looks share one");
+        assert_ne!(off(TrayStyle::RingsFilled), off(TrayStyle::PulseFilled), "Rings' plate is round, Pulse's square");
         // Cut-off wins whatever the severity says.
         assert_eq!(
             settled_icon(Severity::Green, true, TrayStyle::Rings).rgba(),
@@ -905,18 +909,20 @@ mod tests {
         }
     }
 
-    /// Filled looks: a coloured rounded plate with the glyph cut out of it.
+    /// Filled looks: a coloured plate (a circle for Rings, a rounded square for Pulse) with the glyph cut out.
     #[test]
     fn filled_icons_are_a_plate_with_the_glyph_cut_out() {
         for style in [TrayStyle::RingsFilled, TrayStyle::PulseFilled] {
             let img = settled_icon(Severity::Green, false, style);
             assert_eq!(at(&img, 0.2, 0.2).3, 0, "{style:?}: plate corners are rounded");
-            // The plate's own edge is solid, in the mood colour.
-            let (r, g, b, a) = at(&img, CENTER + 10.2, CENTER + 6.0);
+            // The plate's own edge is solid, in the mood colour (a circle is narrower off-axis).
+            let (x, y) = if style == TrayStyle::RingsFilled { (CENTER + 8.5, CENTER + 6.0) } else { (CENTER + 10.2, CENTER + 6.0) };
+            let (r, g, b, a) = at(&img, x, y);
             assert_eq!((r, g, b, a), (COLOR_OK.0, COLOR_OK.1, COLOR_OK.2, 255), "{style:?}");
             // Cut out of the plate: far fewer opaque pixels than a plain plate, but not none.
             let opaque = img.rgba().chunks(4).filter(|p| p[3] == 255).count();
-            assert!(opaque > 800 && opaque < 1700, "{style:?}: {opaque} opaque px");
+            let least = if style == TrayStyle::RingsFilled { 400 } else { 800 }; // a circle is smaller
+            assert!(opaque > least && opaque < 1700, "{style:?}: {opaque} opaque px");
         }
         // Rings: the middle ring (r = 5) is a hole, the very centre is not.
         let rings = settled_icon(Severity::Green, false, TrayStyle::RingsFilled);

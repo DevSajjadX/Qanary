@@ -20,7 +20,7 @@ also read as noisy at 18 px. The hover refresh arrow's head did not point along 
   "!" casts a hard-edged gap. One picture for both Rings and Pulse.
 - **Alarm and heads-up rings on the menu bar are dotted**: dashes shorter than the stroke is wide,
   with round ends, with periods that divide each circumference evenly. Pulse's Alarm dead line is
-  four dots, two each side of the X.
+  four dots, two each side of the X. (The filled Rings Alarm has the inner two dotted rings only, as holes in the plate.)
 - **Pulse Alarm on the orb**: a soft shadow around the X fades the dashed line out near it.
 - **The orb's hover refresh arrow** is bolder (2.2) and its arrowhead points along the arc.
 - The menu-bar drawing in Rust gets round-ended dashes, dots with opacity, and round-ended solid arcs

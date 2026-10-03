@@ -24,9 +24,8 @@ describe("TrayIcon", () => {
         unmount();
       }
     }
-    // Busy shares its picture with ok (only the colour differs), so 4 looks × 4 pictures, less the
-    // Offline the two filled looks share. (Pulse's bare Offline sits in its frame; Rings' does not.)
-    expect(seen.size).toBe(15);
+    // Busy shares its picture with ok (only the colour differs), so 4 looks × 4 pictures.
+    expect(seen.size).toBe(16);
   });
 
   it("filled looks cut the glyph out of a plate with a mask; bare ones do not", () => {
@@ -35,6 +34,17 @@ describe("TrayIcon", () => {
       expect(container.querySelector("mask") !== null).toBe(filled);
       unmount();
     }
+  });
+
+  it("the filled Rings plate is a circle, the filled Pulse plate a rounded square", () => {
+    const corner = (icon: "rings" | "pulse") => {
+      const { container, unmount } = render(<TrayIcon icon={icon} filled mood="ok" />);
+      const rx = container.querySelector("rect[rx]")!.getAttribute("rx");
+      unmount();
+      return Number(rx);
+    };
+    expect(corner("rings")).toBe(11); // half the plate's side: a circle
+    expect(corner("pulse")).toBeLessThan(11);
   });
 
   it("offline is a Wi-Fi with a \"!\" in every look: three solid arcs, a dot and a bar", () => {

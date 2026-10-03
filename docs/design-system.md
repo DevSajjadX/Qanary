@@ -56,7 +56,7 @@ stops it (Pulse Alarm then shows just the dashed line and the X).
 Same two pictures as the orb, drawn in Rust ([`tray.rs`](../src-tauri/src/tray.rs)) and redrawn as
 SVG for the picker ([`trayIcons.tsx`](../src/components/trayIcons.tsx)). The picture is **Rings**, or
 **Pulse** (a heartbeat in a rounded-square outline), drawn bare (Outline) or cut out of a colored
-rounded square (Filled, `tray_filled`). **Settings → Appearance → Menu bar** is a dropdown of three
+plate (Filled, `tray_filled`): a circle for Rings, a rounded square for Pulse. **Settings → Appearance → Menu bar** is a dropdown of three
 pictures ([ADR-0049](adr/0049-menu-bar-icon-can-differ-from-the-orb.md)): **Same as app** (follows the
 orb's picture), **Pulse** and **Rings** (their own picture whatever the orb shows; `tray_shape`), with a
 **Filled menubar icons** switch under it that turns the filled look on or off for whichever picture is chosen. It
@@ -67,8 +67,8 @@ shows what the orb shows, in the orb's `--mood-*` colors (a Rust test checks the
 |---|---|---|---|
 | all clear | `--mood-ok` | 3 solid rings | heartbeat |
 | heads up | `--mood-warn` | 2 rings (the outer one dotted) + "!" | shallower beat |
-| alarm | `--mood-alarm` | 3 dotted rings (filled looks: 2, coarser) | a dead line of dots, two each side of the X |
-| offline | `--mood-offline` (gray) | Wi-Fi with a "!" (3 solid round-ended arcs, a gap cut around the "!"), inside a plain outer ring | the same Wi-Fi, shrunk to sit inside the rounded square ([ADR-0050](adr/0050-offline-is-a-wifi-with-a-bang.md)) |
+| alarm | `--mood-alarm` | 3 dotted rings (filled Rings: the inner 2, as holes in the plate) | a dead line of dots, two each side of the X |
+| offline | `--mood-offline` (gray) | Wi-Fi with a "!" (3 solid round-ended arcs, a gap cut around the "!"), inside a plain outer ring | the same Wi-Fi, shrunk to sit inside the plate ([ADR-0050](adr/0050-offline-is-a-wifi-with-a-bang.md)) |
 | checking | `--mood-busy` | all clear's picture, breathing | all clear's picture, breathing |
 
 Checking lasts the whole probe round: the icon breathes until the snapshot is `settled`, the same

@@ -47,7 +47,7 @@ const PULSE_FIT = 0.7;
 const FRAME_HALF = 10.4;
 const FRAME_CORNER = 4.0;
 const PLATE_HALF = 11.0;
-const PLATE_CORNER = 4.8;
+const PLATE_CORNER = 4.8; // Pulse's rounded square; Rings' plate is a circle (corner = half)
 const FILLED_RING_W = 1.7;
 
 const BEAT_OK: Pt[] = [[2, 12], [6, 12], [9, 3], [15, 21], [18, 12], [22, 12]];
@@ -123,7 +123,7 @@ function cutOut(glyph: StatusIcon, mood: TrayMood): Shape[] {
         { t: "dot", x: 12, y: 14.6, r: 1.0 },
       ];
     }
-    return [ring(3.0, 1, [0.4, 2.742]), ring(7.4, 0.8, [0.4, 2.921])];
+    return [ring(3.0, 1, [0.5, 3.27]), ring(6.4, 0.8, [0.5, 3.521])]; // the bare alarm, outer ring dropped
   }
   if (mood === "ok" || mood === "busy") return [line(BEAT_OK, PULSE_W, 1, 0.78)];
   if (mood === "warn") return [line(BEAT_WARN, PULSE_W, 1, 0.78)];
@@ -240,6 +240,7 @@ export function TrayIcon({
 }) {
   const maskId = useId();
   const cutId = useId();
+  const plateCorner = icon === "rings" ? PLATE_HALF : PLATE_CORNER;
   return (
     <svg
       className="tray-icon"
@@ -259,14 +260,14 @@ export function TrayIcon({
             <rect
               x={C - PLATE_HALF} y={C - PLATE_HALF}
               width={PLATE_HALF * 2} height={PLATE_HALF * 2}
-              rx={PLATE_CORNER} fill="#fff"
+              rx={plateCorner} fill="#fff"
             />
             {cutOut(icon, mood).map((s, i) => drawShape(s, i, "#000", "#fff", cutId))}
           </mask>
           <rect
             x={C - PLATE_HALF} y={C - PLATE_HALF}
             width={PLATE_HALF * 2} height={PLATE_HALF * 2}
-            rx={PLATE_CORNER} fill="currentColor" mask={`url(#${maskId})`}
+            rx={plateCorner} fill="currentColor" mask={`url(#${maskId})`}
           />
         </>
       ) : (
