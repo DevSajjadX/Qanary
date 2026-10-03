@@ -136,8 +136,8 @@ async fn run_service_task(
 
         // Merge this Service's status into the shared snapshot, recompute rollups, and emit the
         // delta. The lock is held only for this synchronous block — never across an await.
-        if let Some((overall, cut_off)) = apply_service_status(&app, &list_id, generation, status) {
-            crate::tray::update_icon(&app, overall, cut_off);
+        if let Some((overall, cut_off, settled)) = apply_service_status(&app, &list_id, generation, status) {
+            crate::tray::update_icon(&app, overall, cut_off, settled);
         }
 
         // Wait the effective interval, but wake early on a "probe now" signal.
@@ -156,7 +156,7 @@ async fn run_service_task(
 }
 
 /// Replace one Service's status inside the live snapshot, recompute that List's `all_down` and the
-/// overall Severity, emit the Status delta, and return the new overall Severity. Returns `None`
+/// overall Severity, emit the Status delta, and return the new (overall, cut_off, settled). Returns `None`
 /// (and emits nothing) for a result from a superseded task generation, before the first snapshot,
 /// or for an unknown list/service id.
 ///
@@ -168,13 +168,13 @@ fn apply_service_status(
     list_id: &str,
     generation: u64,
     status: ServiceStatus,
-) -> Option<(Severity, bool)> {
+) -> Option<(Severity, bool, bool)> {
     let state = app.state::<AppState>();
     let mut guard = state.snapshot.lock().unwrap();
     let current = state.generation.load(Ordering::SeqCst);
     let delta = accept_result(guard.as_mut()?, current, generation, list_id, status)?;
     let _ = app.emit(EVENT_SERVICE, &delta);
-    Some((delta.overall, delta.cut_off))
+    Some((delta.overall, delta.cut_off, delta.settled))
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +266,7 @@ fn apply_derived(
     service_id: &str,
     generation: u64,
     derive: impl FnOnce(&ServiceStatus) -> ServiceStatus,
-) -> Option<(Severity, bool)> {
+) -> Option<(Severity, bool, bool)> {
     let state = app.state::<AppState>();
     let mut guard = state.snapshot.lock().unwrap();
     let snap = guard.as_mut()?;
@@ -282,7 +282,7 @@ fn apply_derived(
     let live = state.generation.load(Ordering::SeqCst);
     let delta = accept_result(snap, live, generation, list_id, next)?;
     let _ = app.emit(EVENT_SERVICE, &delta);
-    Some((delta.overall, delta.cut_off))
+    Some((delta.overall, delta.cut_off, delta.settled))
 }
 
 /// Re-check one Service now — every endpoint of it, or only `endpoint_id` — leaving everything
@@ -335,8 +335,8 @@ pub fn check_now(
         } else {
             apply_derived(&app, &list_id, &service_id, generation, |_| fresh.clone())
         };
-        if let Some((overall, cut_off)) = landed {
-            crate::tray::update_icon(&app, overall, cut_off);
+        if let Some((overall, cut_off, settled)) = landed {
+            crate::tray::update_icon(&app, overall, cut_off, settled);
         }
     });
     Ok(())
@@ -516,11 +516,11 @@ pub fn spawn_wan_task(app: &AppHandle) {
                 guard.as_mut().map(|snap| {
                     snap.wan = wan;
                     let _ = app.emit(EVENT_STATUS, &*snap);
-                    (snap.overall, snap.cut_off)
+                    (snap.overall, snap.cut_off, snap.settled)
                 })
             };
-            if let Some((overall, cut_off)) = overall {
-                crate::tray::update_icon(&app, overall, cut_off);
+            if let Some((overall, cut_off, settled)) = overall {
+                crate::tray::update_icon(&app, overall, cut_off, settled);
             }
 
             // Refresh on schedule; retry sooner after a failed fetch; wake on manual refresh or

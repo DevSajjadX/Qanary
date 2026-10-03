@@ -172,7 +172,7 @@ pub fn reset_config(app: AppHandle) -> Result<Config, String> {
         Ok(())
     })?;
     apply_dock_policy(&app, cfg.hide_dock);
-    crate::tray::set_style(&app, cfg.tray_style);
+    crate::tray::set_style(&app, cfg.status_icon, cfg.tray_filled);
     Ok(cfg)
 }
 
@@ -200,13 +200,14 @@ pub struct SettingsPatch {
     pub blocked_sound: Option<bool>,
     pub notify_volume: Option<u8>,
     pub hide_dock: Option<bool>,
-    pub tray_style: Option<crate::models::TrayStyle>,
+    pub status_icon: Option<crate::models::StatusIcon>,
+    pub tray_filled: Option<bool>,
 }
 
 #[tauri::command]
 pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<Config, String> {
     let hide_dock = patch.hide_dock;
-    let tray_style = patch.tray_style;
+    let tray_look = patch.status_icon.is_some() || patch.tray_filled.is_some();
     let cfg = mutate(&app, |cfg| {
         apply_settings(cfg, patch);
         Ok(())
@@ -214,8 +215,8 @@ pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<Config, S
     if hide_dock.is_some() {
         apply_dock_policy(&app, cfg.hide_dock);
     }
-    if tray_style.is_some() {
-        crate::tray::set_style(&app, cfg.tray_style);
+    if tray_look {
+        crate::tray::set_style(&app, cfg.status_icon, cfg.tray_filled);
     }
     Ok(cfg)
 }
@@ -248,6 +249,7 @@ fn apply_settings(cfg: &mut Config, p: SettingsPatch) {
         (p.blocked_notify, &mut cfg.blocked_notify),
         (p.blocked_sound, &mut cfg.blocked_sound),
         (p.hide_dock, &mut cfg.hide_dock),
+        (p.tray_filled, &mut cfg.tray_filled),
     ];
     for (new, field) in flags {
         if let Some(v) = new {
@@ -257,8 +259,8 @@ fn apply_settings(cfg: &mut Config, p: SettingsPatch) {
     if let Some(v) = p.notify_volume {
         cfg.notify_volume = v;
     }
-    if let Some(v) = p.tray_style {
-        cfg.tray_style = v;
+    if let Some(v) = p.status_icon {
+        cfg.status_icon = v;
     }
     // After the assignments, so an out-of-range `notify_volume` from this payload is clamped
     // rather than persisted as-is.
@@ -606,7 +608,7 @@ pub fn import_config(app: AppHandle, path: String) -> Result<Config, String> {
         Ok(())
     })?;
     apply_dock_policy(&app, cfg.hide_dock);
-    crate::tray::set_style(&app, cfg.tray_style);
+    crate::tray::set_style(&app, cfg.status_icon, cfg.tray_filled);
     Ok(cfg)
 }
 
@@ -675,42 +677,39 @@ mod settings_tests {
         assert!(p.down_sound.is_none());
     }
 
-    /// The tray look is a plain setting: given → applies, omitted → stays.
+    /// The status icon and the menu-bar fill are plain settings: given → applies, omitted → stays.
     #[test]
-    fn patch_sets_the_tray_style() {
-        use crate::models::TrayStyle;
+    fn patch_sets_the_status_icon_and_tray_fill() {
+        use crate::models::StatusIcon;
         let mut cfg = Config::default();
-        assert_eq!(cfg.tray_style, TrayStyle::Rings, "default look");
-        apply_settings(&mut cfg, SettingsPatch { tray_style: Some(TrayStyle::Pulse), ..Default::default() });
-        assert_eq!(cfg.tray_style, TrayStyle::Pulse);
+        assert_eq!((cfg.status_icon, cfg.tray_filled), (StatusIcon::Rings, false), "default look");
+        apply_settings(
+            &mut cfg,
+            SettingsPatch { status_icon: Some(StatusIcon::Pulse), tray_filled: Some(true), ..Default::default() },
+        );
+        assert_eq!((cfg.status_icon, cfg.tray_filled), (StatusIcon::Pulse, true));
         apply_settings(&mut cfg, SettingsPatch::default());
-        assert_eq!(cfg.tray_style, TrayStyle::Pulse, "omitted = unchanged");
+        assert_eq!((cfg.status_icon, cfg.tray_filled), (StatusIcon::Pulse, true), "omitted = unchanged");
     }
 
-    /// The frontend sends the style as a lowercase word; a config file from before the setting
-    /// existed loads as Rings.
+    /// The frontend sends the icon as a lowercase word; a config file from before the settings
+    /// existed loads as bare Rings.
     #[test]
-    fn tray_style_wire_format_and_old_configs() {
-        use crate::models::TrayStyle;
-        let p: SettingsPatch = serde_json::from_str(r#"{"tray_style":"pulse"}"#).unwrap();
-        assert_eq!(p.tray_style, Some(TrayStyle::Pulse));
-        for (wire, style) in [
-            ("rings", TrayStyle::Rings),
-            ("pulse", TrayStyle::Pulse),
-            ("rings-filled", TrayStyle::RingsFilled),
-            ("pulse-filled", TrayStyle::PulseFilled),
-        ] {
-            let p: SettingsPatch = serde_json::from_str(&format!(r#"{{"tray_style":"{wire}"}}"#)).unwrap();
-            assert_eq!(p.tray_style, Some(style));
-            assert_eq!(serde_json::to_value(style).unwrap(), wire);
+    fn status_icon_wire_format_and_old_configs() {
+        use crate::models::StatusIcon;
+        for (wire, icon) in [("rings", StatusIcon::Rings), ("pulse", StatusIcon::Pulse)] {
+            let p: SettingsPatch = serde_json::from_str(&format!(r#"{{"status_icon":"{wire}"}}"#)).unwrap();
+            assert_eq!(p.status_icon, Some(icon));
+            assert_eq!(serde_json::to_value(icon).unwrap(), wire);
         }
-        assert!(serde_json::from_str::<SettingsPatch>(r#"{"tray_style":"nope"}"#).is_err());
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"status_icon":"nope"}"#).is_err());
 
         let mut json = serde_json::to_value(Config::default()).unwrap();
-        assert_eq!(json["tray_style"], "rings");
-        json.as_object_mut().unwrap().remove("tray_style");
+        assert_eq!((json["status_icon"].as_str(), json["tray_filled"].as_bool()), (Some("rings"), Some(false)));
+        json.as_object_mut().unwrap().remove("status_icon");
+        json.as_object_mut().unwrap().remove("tray_filled");
         let old: Config = serde_json::from_value(json).unwrap();
-        assert_eq!(old.tray_style, TrayStyle::Rings);
+        assert_eq!((old.status_icon, old.tray_filled), (StatusIcon::Rings, false));
     }
 }
 

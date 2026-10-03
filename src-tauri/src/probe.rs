@@ -456,7 +456,8 @@ mod tests {
             blocked_sound: true,
             notify_volume: 100,
             hide_dock: false,
-            tray_style: Default::default(),
+            status_icon: Default::default(),
+            tray_filled: false,
             last_changelog_version: None,
         };
         let lists = checking_lists(&config);

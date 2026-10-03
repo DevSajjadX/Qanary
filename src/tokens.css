@@ -36,11 +36,21 @@
   --sev-green: var(--state-up);
   --sev-red: var(--state-down);
 
+  /* Orb moods (the hero's --sev) keep the pre-Glass status palette; offline takes the gray. */
+  --mood-ok: #1a9c61;
+  --mood-warn: #f2792b;
+  --mood-alarm: #e03131;
+  --mood-busy: #e6b400;
+  --mood-offline: var(--state-checking);
+
   /* ---- Brand (CONSTANT) ---- */
   /* Canary yellow. Yellow fails contrast on white and against white text, so
    * text ON brand must use --brand-ink. Enforced by the Button component. */
   --brand: #ffd23f;
   --brand-ink: #3d2e00;
+  /* A switch's "on" track: v0.6.5's brand gold, kept as it was when Glass lightened --brand
+     (ADR-0046). */
+  --switch-on: #ffcc00;
   --brand-press: #e6bb2e;
 
   /* ---- Chrome layers (theme-adaptive) ---- */

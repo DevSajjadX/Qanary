@@ -5,6 +5,8 @@
 //! a `service-update` delta as its probe lands; the WAN task refreshes WAN and pushes a full
 //! `status-update`. See `scheduler.rs`.
 
+#[cfg(target_os = "macos")]
+mod app_menu;
 mod commands;
 mod models;
 mod netwatch;
@@ -123,7 +125,7 @@ pub fn run() {
 
             // Snapshot the flags we need before moving `config` into the managed state.
             let hide_dock = config.hide_dock;
-            let tray_style = config.tray_style;
+            let (status_icon, tray_filled) = (config.status_icon, config.tray_filled);
 
             // Broadcast channel for the "probe now" signal. Capacity 1 is enough: a missed
             // value just means a task was mid-probe, which is exactly when we don't need to wake it.
@@ -157,8 +159,12 @@ pub fn run() {
             }
 
             // Build the tray icon before emit_checking so update_icon finds the handle.
-            tray::init_style(tray_style);
+            tray::init_style(status_icon, tray_filled);
             tray::build_tray(app.handle())?;
+            // ponytail: macOS only; Windows/Linux would put a menu bar inside the window, which
+            // the Glass design has no room for. Revisit with the Windows port.
+            #[cfg(target_os = "macos")]
+            app_menu::build(app.handle())?;
 
             // Paint a checking snapshot (so the UI shows lists on first paint instead of the
             // "Starting first probe…" placeholder) and spawn one Service probe task per enabled

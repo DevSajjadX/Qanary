@@ -24,16 +24,14 @@
 //! A **debounce loop** waits for the first `()` from either watcher, sleeps 500 ms while draining
 //! any extras (VPN bring-up fires several route changes at once), then calls `trigger` exactly once.
 //!
-//! `trigger` reuses the same path as the manual refresh button (`refresh_now` command):
-//! `emit_checking` paints all services Checking for instant UI feedback, then `probe_now.send(())`
-//! wakes every Service probe task and the WAN task simultaneously.
+//! `trigger` runs the manual refresh itself (`commands::refresh_now`): every service shows
+//! Checking at once, and every Service probe task and the WAN task wake together.
 //!
 //! Watcher errors are logged and cause that layer to exit; the interval timer and the other layer
 //! keep the app functional.
 
-use crate::{emit_checking, state::AppState};
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::sync::mpsc;
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -59,18 +57,12 @@ pub fn spawn_netwatch_task(app: &AppHandle) {
     spawn_sc_watcher(tx);
 }
 
-// ── Trigger (mirrors `refresh_now`) ──────────────────────────────────────────
+// ── Trigger ──────────────────────────────────────────────────────────────────
 
-/// Fire one probe round. Mirrors `commands::refresh_now` exactly:
-/// 1. `emit_checking` paints all services Checking and emits a `status-update` for instant
-///    UI feedback (the spinning indicator appears before any probe result comes back).
-/// 2. `probe_now.send(())` wakes every subscribed Service probe task and the WAN task.
-///
-/// `Err` on send means no subscribers yet — harmless.
+/// Fire one probe round: the same refresh as the orb, the tray and the app menu.
 fn trigger(app: &AppHandle) {
     eprintln!("netwatch: probe triggered"); // observable signal for §5 manual smoke tests
-    emit_checking(app);
-    let _ = app.state::<AppState>().probe_now.send(());
+    crate::commands::refresh_now(app.clone());
 }
 
 // ── Debounce loop ─────────────────────────────────────────────────────────────

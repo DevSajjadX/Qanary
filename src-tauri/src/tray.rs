@@ -2,7 +2,7 @@
 //!
 //! `build_tray` creates the menu-bar icon and wires all interactions:
 //!   - Icon colour and shape reflect `Severity` (green / amber / red), drawn as rings or a
-//!     heartbeat (`TrayStyle`).
+//!     heartbeat (`StatusIcon`), bare or cut out of a filled plate.
 //!   - Left-click → toggle main window.
 //!   - Context menu → Show / Hide · Refresh now · Quit.
 //! Icon pixels are generated at runtime — no binary asset files.
@@ -10,7 +10,7 @@
 //! Call `build_tray` once inside `setup()` **before** the first `emit_checking`
 //! so the tray handle exists when `update_icon` is first invoked.
 
-use crate::models::{Severity, TrayStyle};
+use crate::models::{Severity, StatusIcon};
 use crate::tray_menu::{list_lines, Dot, ListLine};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -23,7 +23,7 @@ use tauri::{
 };
 
 /// Generation counter for the breathing animation. `update_checking` claims the next
-/// value and animates while it stays current; any later `update_icon`/`update_checking`
+/// value and animates while it stays current; a later settled `update_icon` or `update_checking`
 /// bumps it, which stops the previous loop. (Lets us cancel without channels.)
 static ANIM_GEN: AtomicU64 = AtomicU64::new(0);
 
@@ -38,6 +38,27 @@ static CHECKING: AtomicBool = AtomicBool::new(false);
 /// The last settled state (severity, cut-off), kept so a style change can redraw the icon
 /// without waiting for the next probe result. `None` until the first result lands.
 static LAST: Mutex<Option<(Severity, bool)>> = Mutex::new(None);
+
+/// The four looks: the status icon (shared with the orb), bare or cut out of a filled plate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TrayStyle {
+    #[default]
+    Rings,
+    Pulse,
+    RingsFilled,
+    PulseFilled,
+}
+
+impl TrayStyle {
+    fn of(icon: StatusIcon, filled: bool) -> Self {
+        match (icon, filled) {
+            (StatusIcon::Rings, false) => TrayStyle::Rings,
+            (StatusIcon::Pulse, false) => TrayStyle::Pulse,
+            (StatusIcon::Rings, true) => TrayStyle::RingsFilled,
+            (StatusIcon::Pulse, true) => TrayStyle::PulseFilled,
+        }
+    }
+}
 
 const ALL_STYLES: [TrayStyle; 4] =
     [TrayStyle::Rings, TrayStyle::Pulse, TrayStyle::RingsFilled, TrayStyle::PulseFilled];
@@ -62,13 +83,13 @@ const ID_QUIT: &str = "quit";
 /// A list's row; the list id follows the prefix. Clicking it shows the main window.
 const ID_LIST_PREFIX: &str = "list:";
 
-/// Palette colours, matching `src/tokens.css` (the authoritative source):
-///   up #2fd08a · blocked #ff9a3d (heads up) · down #ff5a52 · offline #b8123f · checking #8b93a3
-const COLOR_OK: (u8, u8, u8) = (0x2f, 0xd0, 0x8a);
-const COLOR_WARN: (u8, u8, u8) = (0xff, 0x9a, 0x3d);
-const COLOR_ALARM: (u8, u8, u8) = (0xff, 0x5a, 0x52);
-const COLOR_OFFLINE: (u8, u8, u8) = (0xb8, 0x12, 0x3f);
-const COLOR_CHECKING: (u8, u8, u8) = (0x8b, 0x93, 0xa3);
+/// The in-app orb's mood colours, the `--mood-*` tokens of `src/tokens.css` (the authoritative
+/// source; `colours_match_the_orb_tokens` checks them): the icon shows what the orb shows.
+const COLOR_OK: (u8, u8, u8) = (0x1a, 0x9c, 0x61);
+const COLOR_WARN: (u8, u8, u8) = (0xf2, 0x79, 0x2b);
+const COLOR_ALARM: (u8, u8, u8) = (0xe0, 0x31, 0x31);
+const COLOR_OFFLINE: (u8, u8, u8) = (0x8b, 0x93, 0xa3);
+const COLOR_CHECKING: (u8, u8, u8) = (0xe6, 0xb4, 0x00);
 
 /// What the icon says. `Busy` is the in-flight state (a probe round is running); the rest map
 /// 1:1 from `Severity`. Same vocabulary as the in-app `Mood` (`src/components/orbIcons.tsx`).
@@ -77,7 +98,7 @@ enum Mood {
     Ok,
     Warn,
     Alarm,
-    /// Cut off: nothing anywhere is reachable. Alarm's look, struck through.
+    /// Cut off: nothing anywhere is reachable. Wi-Fi off, the same in every look.
     Offline,
     Busy,
 }
@@ -160,6 +181,9 @@ enum Prim {
     Frame { half: f32, corner: f32, w: f32, a: f32 },
     /// A solid dot.
     Dot { x: f32, y: f32, r: f32 },
+    /// Part of a circle outline around (`cx`, `cy`): `span` radians from angle `from`, both
+    /// clockwise on screen from 3 o'clock, like an SVG arc with sweep-flag 1. Dashes start at `from`.
+    Arc { cx: f32, cy: f32, r: f32, w: f32, a: f32, dash: Option<(f32, f32)>, from: f32, span: f32 },
 }
 
 const RING_W: f32 = 1.9;
@@ -179,11 +203,30 @@ const PULSE_FIT: f32 = 0.7;
 const PULSE_W: f32 = 1.9;
 const BANG: &[(f32, f32)] = &[(12., 9.), (12., 12.6)];
 
+/// Offline: the in-app `WIFI_OFF` — three dashed 90° arcs over one focal point, a dot, and the
+/// slash. One picture for every look, as in the app; `k` shrinks it toward the centre for the plate.
+fn wifi_off(k: f32, w: f32, slash_w: f32, dot_r: f32) -> Vec<Prim> {
+    use std::f32::consts::PI;
+    let fit = |v: f32| CENTER + (v - CENTER) * k;
+    let (cx, cy) = (fit(12.0), fit(19.5));
+    let arc = |r: f32, a, on: f32, off: f32| Prim::Arc {
+        cx, cy, r: r * k, w, a, dash: Some((on * k, off * k)), from: 1.25 * PI, span: 0.5 * PI,
+    };
+    vec![
+        arc(6.0, 1.0, 2.2, 1.8),
+        arc(10.5, 0.85, 2.8, 2.2),
+        arc(15.0, 0.7, 3.4, 2.6),
+        Prim::Dot { x: cx, y: cy, r: dot_r },
+        Prim::Line { pts: SLASH, w: slash_w, a: 1.0, dash: None, k },
+    ]
+}
+
 /// The shapes for one style + mood. Opacities are the app's, nudged up a little: the app draws
 /// on a coloured orb, the tray draws straight on the menu bar, where faint rings would vanish.
 fn prims(glyph: Glyph, mood: Mood) -> Vec<Prim> {
     let ring = |r, a, dash| Prim::Ring { r, w: RING_W, a, dash };
     match (glyph, mood) {
+        (_, Mood::Offline) => wifi_off(1.0, RING_W, LINE_W, 1.3),
         (Glyph::Rings, Mood::Ok | Mood::Busy) => {
             vec![ring(3.2, 1.0, None), ring(6.8, 0.75, None), ring(10.6, 0.5, None)]
         }
@@ -193,38 +236,26 @@ fn prims(glyph: Glyph, mood: Mood) -> Vec<Prim> {
             Prim::Line { pts: BANG, w: 2.0, a: 1.0, dash: None, k: 1.0 },
             Prim::Dot { x: 12.0, y: 15.6, r: 1.2 },
         ],
-        (Glyph::Rings, Mood::Alarm | Mood::Offline) => {
-            let mut v = vec![
-            // Dash periods divide each circumference evenly (5, 10 and 14 dashes), so there is
-            // no odd-sized dash where the pattern meets itself.
+        // Dash periods divide each circumference evenly (5, 10 and 14 dashes), so there is no
+        // odd-sized dash where the pattern meets itself.
+        (Glyph::Rings, Mood::Alarm) => vec![
             ring(3.2, 1.0, Some((2.4, 1.62))),
             ring(6.8, 0.8, Some((2.7, 1.57))),
             ring(10.6, 0.55, Some((3.0, 1.76))),
-            ];
-            if mood == Mood::Offline {
-                v.push(Prim::Line { pts: SLASH, w: LINE_W, a: 1.0, dash: None, k: 1.0 });
-            }
-            v
-        }
-        // Pulse: every state sits inside the same rounded square.
+        ],
+        // Pulse: every other state sits inside the same rounded square.
         (Glyph::Pulse, mood) => {
             let line = |pts, a, dash, k| Prim::Line { pts, w: PULSE_W, a, dash, k };
             let mut v = vec![Prim::Frame { half: FRAME_HALF, corner: FRAME_CORNER, w: RING_W, a: 0.75 }];
-            match mood {
-                Mood::Ok | Mood::Busy => v.push(line(BEAT_OK, 1.0, None, PULSE_FIT)),
-                Mood::Warn => v.push(line(BEAT_WARN, 1.0, None, PULSE_FIT)),
+            if mood == Mood::Warn {
+                v.push(line(BEAT_WARN, 1.0, None, PULSE_FIT));
+            } else if mood == Mood::Alarm {
                 // A dead flat line marked with an X. (The dash period divides the line evenly.)
-                Mood::Alarm => {
-                    v.push(line(FLAT, 0.7, Some((1.75, 1.75)), PULSE_FIT));
-                    v.push(line(CROSS_A, 1.0, None, 0.95));
-                    v.push(line(CROSS_B, 1.0, None, 0.95));
-                }
-                // The same flat line, struck through by a slash across the whole frame (the X is
-                // Alarm's alone — the two must read apart).
-                Mood::Offline => {
-                    v.push(line(FLAT, 0.7, Some((1.75, 1.75)), PULSE_FIT));
-                    v.push(Prim::Line { pts: SLASH, w: LINE_W, a: 1.0, dash: None, k: 1.0 });
-                }
+                v.push(line(FLAT, 0.7, Some((1.75, 1.75)), PULSE_FIT));
+                v.push(line(CROSS_A, 1.0, None, 0.95));
+                v.push(line(CROSS_B, 1.0, None, 0.95));
+            } else {
+                v.push(line(BEAT_OK, 1.0, None, PULSE_FIT));
             }
             v
         }
@@ -239,6 +270,7 @@ fn filled_prims(glyph: Glyph, mood: Mood) -> Vec<Prim> {
     let ring = |r, a, dash| Prim::Ring { r, w: FILLED_RING_W, a, dash };
     let line = |pts, w, a, dash, k| Prim::Line { pts, w, a, dash, k };
     match (glyph, mood) {
+        (_, Mood::Offline) => wifi_off(0.72, FILLED_RING_W, 2.0, 1.1),
         (Glyph::Rings, Mood::Ok | Mood::Busy) => {
             vec![ring(2.3, 1.0, None), ring(5.0, 0.85, None), ring(7.7, 0.65, None)]
         }
@@ -248,32 +280,24 @@ fn filled_prims(glyph: Glyph, mood: Mood) -> Vec<Prim> {
             line(BANG, 1.7, 1.0, None, 0.72),
             Prim::Dot { x: 12.0, y: 14.6, r: 1.0 },
         ],
-        (Glyph::Rings, Mood::Alarm | Mood::Offline) => {
-            // Two coarse dashed rings, not three: at this size three read as noise. Dash
-            // periods divide each circumference evenly (4 and 9 dashes).
-            let mut v = vec![
-                ring(3.0, 1.0, Some((3.0, 1.71))),
-                ring(7.4, 0.8, Some((3.4, 1.77))),
-            ];
-            if mood == Mood::Offline {
-                v.push(line(SLASH, 2.0, 1.0, None, 0.8));
-            }
-            v
-        }
+        // Two coarse dashed rings, not three: at this size three read as noise. Dash periods
+        // divide each circumference evenly (4 and 9 dashes).
+        (Glyph::Rings, Mood::Alarm) => vec![
+            ring(3.0, 1.0, Some((3.0, 1.71))),
+            ring(7.4, 0.8, Some((3.4, 1.77))),
+        ],
         (Glyph::Pulse, mood) => {
             let trace = |pts, a, dash| line(pts, PULSE_W, a, dash, 0.78);
-            match mood {
-                Mood::Ok | Mood::Busy => vec![trace(BEAT_OK, 1.0, None)],
-                Mood::Warn => vec![trace(BEAT_WARN, 1.0, None)],
-                Mood::Alarm => vec![
+            if mood == Mood::Warn {
+                vec![trace(BEAT_WARN, 1.0, None)]
+            } else if mood == Mood::Alarm {
+                vec![
                     trace(FLAT, 0.7, Some((1.95, 1.95))),
                     line(CROSS_A, PULSE_W, 1.0, None, 0.95),
                     line(CROSS_B, PULSE_W, 1.0, None, 0.95),
-                ],
-                Mood::Offline => vec![
-                    trace(FLAT, 0.7, Some((1.95, 1.95))),
-                    line(SLASH, 2.0, 1.0, None, 0.85),
-                ],
+                ]
+            } else {
+                vec![trace(BEAT_OK, 1.0, None)]
             }
         }
     }
@@ -341,17 +365,33 @@ fn prim_alpha(p: &Prim, x: f32, y: f32) -> f32 {
                 0.0
             }
         }
+        Prim::Arc { cx, cy, r, w, a, dash, from, span } => {
+            let (dx, dy) = (x - cx, y - cy);
+            if ((dx * dx + dy * dy).sqrt() - r).abs() > w / 2.0 {
+                return 0.0;
+            }
+            let past = (dy.atan2(dx) - from).rem_euclid(std::f32::consts::TAU);
+            if past > span {
+                return 0.0;
+            }
+            if let Some((on, off)) = dash {
+                if (past * r) % (on + off) > on {
+                    return 0.0;
+                }
+            }
+            a
+        }
     }
 }
 
 /// Tray icon for a settled state (static, full opacity). `cut_off` = nothing anywhere is
 /// reachable; it wins over the severity, like the in-app Offline mood.
-pub fn status_icon(sev: Severity, cut_off: bool, style: TrayStyle) -> tauri::image::Image<'static> {
+fn settled_icon(sev: Severity, cut_off: bool, style: TrayStyle) -> tauri::image::Image<'static> {
     let mood = mood_of(sev, cut_off);
     render(style, mood, mood_color(mood), 1.0)
 }
 
-/// One breathing frame of the busy/checking icon — grey like the in-app busy orb; `pulse` in
+/// One breathing frame of the busy/checking icon — yellow like the in-app busy orb; `pulse` in
 /// 0..1 scales the opacity so the icon appears to breathe.
 fn checking_frame(style: TrayStyle, pulse: f32) -> tauri::image::Image<'static> {
     render(style, Mood::Busy, COLOR_CHECKING, pulse)
@@ -409,37 +449,65 @@ fn draw_icon(
     tauri::image::Image::new_owned(rgba, SIZE, SIZE)
 }
 
-/// Update the tray icon to reflect the current `Severity`.
-/// Cancels any running breathing animation. No-op if the tray doesn't exist yet.
-pub fn update_icon(app: &AppHandle, sev: Severity, cut_off: bool) {
-    ANIM_GEN.fetch_add(1, Ordering::SeqCst); // stop any breathing loop
-    CHECKING.store(false, Ordering::SeqCst);
-    *LAST.lock().unwrap() = Some((sev, cut_off));
-    set_tray_image(app, status_icon(sev, cut_off, current_style()));
-    refresh_menu(app);
+/// Show the snapshot on the icon. While a probe round is in flight (`!settled`, the same flag the
+/// in-app orb's busy reads) it keeps breathing; a settled snapshot draws its status and stops the
+/// breathing. No-op if the tray doesn't exist yet.
+pub fn update_icon(app: &AppHandle, sev: Severity, cut_off: bool, settled: bool) {
+    match icon_action(settled, CHECKING.load(Ordering::SeqCst)) {
+        IconAction::KeepBreathing => refresh_menu(app),
+        IconAction::Breathe => update_checking(app),
+        IconAction::Draw => {
+            ANIM_GEN.fetch_add(1, Ordering::SeqCst); // stop any breathing loop
+            CHECKING.store(false, Ordering::SeqCst);
+            *LAST.lock().unwrap() = Some((sev, cut_off));
+            set_tray_image(app, settled_icon(sev, cut_off, current_style()));
+            refresh_menu(app);
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum IconAction {
+    /// Start the breathing loop.
+    Breathe,
+    /// Already breathing: only the menu's per-list lines change.
+    KeepBreathing,
+    /// Draw the settled status and stop breathing.
+    Draw,
+}
+
+/// What a snapshot does to the icon. Only a settled snapshot may draw a status: a result that
+/// lands mid-round would otherwise flash a stale colour before the round ends.
+fn icon_action(settled: bool, breathing: bool) -> IconAction {
+    match (settled, breathing) {
+        (true, _) => IconAction::Draw,
+        (false, true) => IconAction::KeepBreathing,
+        (false, false) => IconAction::Breathe,
+    }
 }
 
 /// Set the icon look before the tray exists (startup). Draws nothing.
-pub fn init_style(style: TrayStyle) {
-    STYLE.store(style_id(style), Ordering::SeqCst);
+pub fn init_style(icon: StatusIcon, filled: bool) {
+    STYLE.store(style_id(TrayStyle::of(icon, filled)), Ordering::SeqCst);
 }
 
 /// Switch the icon look live (Settings, import, reset). Redraws at once from the last settled
 /// state; while a probe round is breathing the next frame picks the new look up by itself.
-pub fn set_style(app: &AppHandle, style: TrayStyle) {
+pub fn set_style(app: &AppHandle, icon: StatusIcon, filled: bool) {
+    let style = TrayStyle::of(icon, filled);
     STYLE.store(style_id(style), Ordering::SeqCst);
     if CHECKING.load(Ordering::SeqCst) {
         return;
     }
     let last = *LAST.lock().unwrap();
     if let Some((sev, cut_off)) = last {
-        set_tray_image(app, status_icon(sev, cut_off, style));
+        set_tray_image(app, settled_icon(sev, cut_off, style));
     }
 }
 
-/// Start the busy/checking state: a breathing brand-yellow dot, mirroring the status
-/// button's `qbreathe`. Animates on a background task until the next `update_icon`
-/// (cycle settles) or `update_checking` supersedes it.
+/// Start the busy/checking state: the All-clear picture breathing in busy yellow, mirroring the status
+/// button's `qbreathe`. Animates on a background task until a settled `update_icon`
+/// (the round settles) or `update_checking` supersedes it.
 pub fn update_checking(app: &AppHandle) {
     let generation = ANIM_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     CHECKING.store(true, Ordering::SeqCst);
@@ -574,10 +642,18 @@ mod tests {
     }
 
     #[test]
+    fn only_a_settled_snapshot_draws_a_status() {
+        assert_eq!(icon_action(true, true), IconAction::Draw);
+        assert_eq!(icon_action(true, false), IconAction::Draw);
+        assert_eq!(icon_action(false, true), IconAction::KeepBreathing);
+        assert_eq!(icon_action(false, false), IconAction::Breathe);
+    }
+
+    #[test]
     fn icons_are_44px_with_transparent_corners() {
         for style in STYLES {
             for sev in SEVERITIES {
-                let img = status_icon(sev, false, style);
+                let img = settled_icon(sev, false, style);
                 assert_eq!((img.width(), img.height()), (44, 44));
                 assert_eq!(at(&img, 0.2, 0.2).3, 0, "corner must be transparent");
             }
@@ -587,7 +663,7 @@ mod tests {
     /// Rings: the middle ring sits at r = 6.8 (full colour at 70%), the centre is hollow.
     #[test]
     fn rings_ok_is_green_rings_around_a_hollow_centre() {
-        let img = status_icon(Severity::Green, false, TrayStyle::Rings);
+        let img = settled_icon(Severity::Green, false, TrayStyle::Rings);
         let (r, g, b, a) = at(&img, CENTER + 6.8, CENTER);
         assert_eq!((r, g, b), COLOR_OK);
         assert!(a > 150, "ring should be mostly opaque, got {a}");
@@ -597,7 +673,7 @@ mod tests {
     /// Pulse: the beat's upward spike peaks at (9, 3) in the full-size trace, shrunk to fit the frame.
     #[test]
     fn pulse_ok_draws_the_beat() {
-        let img = status_icon(Severity::Green, false, TrayStyle::Pulse);
+        let img = settled_icon(Severity::Green, false, TrayStyle::Pulse);
         let fit = |v: f32| CENTER + (v - CENTER) * PULSE_FIT;
         let (r, g, b, a) = at(&img, fit(9.0), fit(3.0));
         assert_eq!((r, g, b), COLOR_OK);
@@ -605,56 +681,64 @@ mod tests {
         assert_eq!(at(&img, 12.0, 20.0).3, 0, "nothing below the trace's centre section");
     }
 
-    /// Every Pulse state sits in the same rounded-square frame (and Rings has none).
+    /// Every Pulse state but Offline (the shared Wi-Fi off) sits in the same rounded-square frame
+    /// (and Rings has none).
     #[test]
     fn pulse_states_sit_in_a_rounded_square() {
-        for (sev, cut_off) in [
-            (Severity::Green, false),
-            (Severity::Yellow, false),
-            (Severity::Red, false),
-            (Severity::Red, true),
-        ] {
-            let img = status_icon(sev, cut_off, TrayStyle::Pulse);
+        for sev in SEVERITIES {
+            let (cut_off, img) = (false, settled_icon(sev, false, TrayStyle::Pulse));
             assert!(at(&img, CENTER + FRAME_HALF, CENTER).3 > 150, "{sev:?}/{cut_off}: frame edge");
             assert!(at(&img, CENTER, CENTER - FRAME_HALF).3 > 150, "{sev:?}/{cut_off}: frame top");
             // Rounded: the very corner of the square is empty.
             // (A sharp square would be filled here.)
             assert_eq!(at(&img, CENTER + FRAME_HALF + 0.5, CENTER + FRAME_HALF + 0.5).3, 0);
         }
-        let rings = status_icon(Severity::Green, false, TrayStyle::Rings);
+        let rings = settled_icon(Severity::Green, false, TrayStyle::Rings);
         assert_eq!(at(&rings, CENTER + FRAME_HALF, CENTER - FRAME_HALF + 2.0).3, 0);
     }
 
-    /// Cut-off wins over the severity: crimson, and a slash that Alarm doesn't have.
+    /// Cut-off wins over the severity: gray Wi-Fi off — a slash and the arcs' focal dot that Alarm
+    /// doesn't have — one picture for both bare looks and one for both filled looks.
     #[test]
-    fn offline_is_crimson_and_struck_through() {
+    fn offline_is_a_gray_wifi_off_in_every_look() {
         for style in STYLES {
-            let off = status_icon(Severity::Red, true, style);
-            let alarm = status_icon(Severity::Red, false, style);
+            let off = settled_icon(Severity::Red, true, style);
+            let alarm = settled_icon(Severity::Red, false, style);
             let opaque = off.rgba().chunks(4).find(|p| p[3] == 255).expect("an opaque pixel");
             assert_eq!((opaque[0], opaque[1], opaque[2]), COLOR_OFFLINE);
             assert_ne!(off.rgba(), alarm.rgba(), "{style:?}: offline must differ from alarm");
-            // The slash runs corner to corner, through the middle of the box.
-            // The slash crosses the centre: solid on a bare icon, a hole in a filled one.
+            // The slash crosses the centre and the dot sits under the arcs: solid on a bare icon,
+            // holes in a filled one.
             let filled = matches!(style, TrayStyle::RingsFilled | TrayStyle::PulseFilled);
-            let centre = at(&off, CENTER, CENTER).3;
-            assert!(if filled { centre < 40 } else { centre == 255 }, "{style:?}: centre alpha {centre}");
+            let dot_y = if filled { CENTER + 7.5 * 0.72 } else { 19.5 };
+            for (what, y) in [("slash", CENTER), ("dot", dot_y)] {
+                let alpha = at(&off, CENTER, y).3;
+                assert!(if filled { alpha < 40 } else { alpha == 255 }, "{style:?}: {what} alpha {alpha}");
+            }
         }
+        let off = |style| settled_icon(Severity::Red, true, style).rgba().to_vec();
+        assert_eq!(off(TrayStyle::Rings), off(TrayStyle::Pulse), "one Wi-Fi off for the bare looks");
+        assert_eq!(off(TrayStyle::RingsFilled), off(TrayStyle::PulseFilled), "and one for the filled");
         // Cut-off wins whatever the severity says.
         assert_eq!(
-            status_icon(Severity::Green, true, TrayStyle::Rings).rgba(),
-            status_icon(Severity::Red, true, TrayStyle::Rings).rgba()
+            settled_icon(Severity::Green, true, TrayStyle::Rings).rgba(),
+            settled_icon(Severity::Red, true, TrayStyle::Rings).rgba()
         );
     }
 
-    /// `init_style` is what the redraw reads back.
+    /// `init_style` is what the redraw reads back: the config's icon and fill pick one look each.
     #[test]
     fn style_round_trips() {
-        for style in STYLES {
-            init_style(style);
+        for (icon, filled, style) in [
+            (StatusIcon::Rings, false, TrayStyle::Rings),
+            (StatusIcon::Pulse, false, TrayStyle::Pulse),
+            (StatusIcon::Rings, true, TrayStyle::RingsFilled),
+            (StatusIcon::Pulse, true, TrayStyle::PulseFilled),
+        ] {
+            init_style(icon, filled);
             assert_eq!(current_style(), style);
         }
-        init_style(TrayStyle::Rings);
+        init_style(StatusIcon::Rings, false);
     }
 
     /// The severity picks the colour, in both styles.
@@ -663,34 +747,62 @@ mod tests {
         let want = [COLOR_OK, COLOR_WARN, COLOR_ALARM];
         for style in STYLES {
             for (sev, color) in SEVERITIES.into_iter().zip(want) {
-                let img = status_icon(sev, false, style);
+                let img = settled_icon(sev, false, style);
                 let opaque = img.rgba().chunks(4).find(|p| p[3] == 255).expect("an opaque pixel");
                 assert_eq!((opaque[0], opaque[1], opaque[2]), color);
             }
         }
     }
 
-    /// Every style × severity is a different picture, so shape alone tells states apart.
+    /// Every style × severity is a different picture, so shape alone tells states apart. Offline is
+    /// the one picture shared across looks (see `offline_is_a_gray_wifi_off_in_every_look`).
     #[test]
     fn every_state_looks_different() {
         let mut seen: Vec<Vec<u8>> = Vec::new();
         for style in STYLES {
-            for (sev, cut_off) in [
-                (Severity::Green, false),
-                (Severity::Yellow, false),
-                (Severity::Red, false),
-                (Severity::Red, true),
-            ] {
-                let px = status_icon(sev, cut_off, style).rgba().to_vec();
-                assert!(!seen.contains(&px), "{style:?} / {sev:?} / {cut_off} duplicates another icon");
+            for sev in SEVERITIES {
+                let px = settled_icon(sev, false, style).rgba().to_vec();
+                assert!(!seen.contains(&px), "{style:?} / {sev:?} duplicates another icon");
                 seen.push(px);
             }
         }
+        for style in [TrayStyle::Rings, TrayStyle::RingsFilled] {
+            let px = settled_icon(Severity::Red, true, style).rgba().to_vec();
+            assert!(!seen.contains(&px), "{style:?} offline duplicates another icon");
+            seen.push(px);
+        }
     }
 
-    /// The breathing frame is grey and `pulse` scales its opacity.
+    /// The icon shows what the in-app orb shows, so its colours are the orb's `--mood-*` tokens.
     #[test]
-    fn checking_frame_is_grey_and_dims() {
+    fn colours_match_the_orb_tokens() {
+        let css = include_str!("../../src/tokens.css");
+        // `--name: value;`, following `var(--other)` to its hex.
+        fn token(css: &str, name: &str) -> (u8, u8, u8) {
+            let key = format!("--{name}:");
+            let at = css.find(&key).unwrap_or_else(|| panic!("--{name} missing")) + key.len();
+            let value = css[at..].split(';').next().unwrap().trim();
+            if let Some(other) = value.strip_prefix("var(--").and_then(|v| v.strip_suffix(')')) {
+                return token(css, other);
+            }
+            let hex = |i: usize| u8::from_str_radix(&value[i..i + 2], 16).unwrap();
+            assert!(value.starts_with('#') && value.len() == 7, "--{name}: {value}");
+            (hex(1), hex(3), hex(5))
+        }
+        for (name, rgb) in [
+            ("mood-ok", COLOR_OK),
+            ("mood-warn", COLOR_WARN),
+            ("mood-alarm", COLOR_ALARM),
+            ("mood-offline", COLOR_OFFLINE),
+            ("mood-busy", COLOR_CHECKING),
+        ] {
+            assert_eq!(token(css, name), rgb, "--{name}");
+        }
+    }
+
+    /// The breathing frame is busy yellow and `pulse` scales its opacity.
+    #[test]
+    fn checking_frame_is_yellow_and_dims() {
         for style in STYLES {
             let bright = checking_frame(style, 1.0);
             let dim = checking_frame(style, 0.5);
@@ -706,7 +818,7 @@ mod tests {
     #[test]
     fn filled_icons_are_a_plate_with_the_glyph_cut_out() {
         for style in [TrayStyle::RingsFilled, TrayStyle::PulseFilled] {
-            let img = status_icon(Severity::Green, false, style);
+            let img = settled_icon(Severity::Green, false, style);
             assert_eq!(at(&img, 0.2, 0.2).3, 0, "{style:?}: plate corners are rounded");
             // The plate's own edge is solid, in the mood colour.
             let (r, g, b, a) = at(&img, CENTER + 10.2, CENTER + 6.0);
@@ -716,13 +828,13 @@ mod tests {
             assert!(opaque > 800 && opaque < 1700, "{style:?}: {opaque} opaque px");
         }
         // Rings: the middle ring (r = 5) is a hole, the very centre is not.
-        let rings = status_icon(Severity::Green, false, TrayStyle::RingsFilled);
+        let rings = settled_icon(Severity::Green, false, TrayStyle::RingsFilled);
         assert!(at(&rings, CENTER + 5.0, CENTER).3 < 80, "ring is cut out");
         assert_eq!(at(&rings, CENTER, CENTER).3, 255, "inside the innermost ring the plate stays");
         // Filled differs from bare, for the same picture.
         assert_ne!(
-            status_icon(Severity::Red, true, TrayStyle::PulseFilled).rgba(),
-            status_icon(Severity::Red, true, TrayStyle::Pulse).rgba()
+            settled_icon(Severity::Red, true, TrayStyle::PulseFilled).rgba(),
+            settled_icon(Severity::Red, true, TrayStyle::Pulse).rgba()
         );
     }
 
@@ -758,7 +870,7 @@ mod tests {
                 ("alarm", Severity::Red, false),
                 ("offline", Severity::Red, true),
             ] {
-                let img = status_icon(sev, cut_off, style);
+                let img = settled_icon(sev, cut_off, style);
                 std::fs::write(format!("{dir}/{style:?}-{name}.rgba"), img.rgba()).unwrap();
             }
             std::fs::write(format!("{dir}/{style:?}-busy.rgba"), checking_frame(style, 1.0).rgba()).unwrap();
@@ -775,7 +887,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app, &[])?;
 
     TrayIconBuilder::with_id("main")
-        .icon(status_icon(Severity::Green, false, current_style()))
+        .icon(settled_icon(Severity::Green, false, current_style()))
         // macOS renders tray icons as monochrome template images by default, which
         // strips the colour. Keep our RGBA colours so the traffic-light reads.
         .icon_as_template(false)
@@ -784,12 +896,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             ID_SHOW_HIDE => toggle_window(app),
-            ID_REFRESH => {
-                // Mirror the in-app refresh_now command: flash the checking state, then broadcast
-                // "probe now" so every Service probe task (and the WAN task) wakes immediately.
-                crate::emit_checking(app);
-                let _ = app.state::<crate::state::AppState>().probe_now.send(());
-            }
+            ID_REFRESH => crate::commands::refresh_now(app.clone()),
             ID_QUIT => app.exit(0),
             // A list row: bring the app up so the list can be looked at.
             id if id.starts_with(ID_LIST_PREFIX) => show_window(app),
