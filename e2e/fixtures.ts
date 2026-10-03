@@ -1,12 +1,8 @@
 /**
  * Playwright fixtures for Qanary e2e tests.
  *
- * Injects a minimal Tauri IPC mock before page load so api.ts commands resolve
- * without a native Tauri runtime. Runs against `pnpm dev` (port 1420).
- *
- * ponytail: inline __TAURI_INTERNALS__ mock instead of loading @tauri-apps/api/mocks.js
- * as a content-script; avoids ESM export stripping edge-cases and addInitScript scoping.
- * Achieves the same result: window.__TAURI_INTERNALS__.invoke is wired before React mounts.
+ * Opens `pnpm dev` (port 1420) at /?mock, where the app installs its own dev Tauri IPC mock
+ * (src/dev/mockTauri.ts) before React mounts; the canned data below reaches it as window.__MOCK__.
  */
 import { test as base, type Page } from "@playwright/test";
 import type { Snapshot, Config } from "../src/types";
@@ -75,7 +71,8 @@ export const CONFIG: Config = {
   // Independent of the *_sound flags (ADR-0028) — a stored level survives every flag being off.
   notify_volume: 70,
   hide_dock: false,
-  tray_style: "rings",
+  status_icon: "rings",
+  tray_filled: false,
   last_changelog_version: null,
 };
 
@@ -95,70 +92,15 @@ export const test = base.extend<QanaryFixtures>({
     const snap = SNAPSHOT;
     const cfg = CONFIG;
 
-    // Wire window.__TAURI_INTERNALS__ before any page script runs.
-    // This implements the same contract as @tauri-apps/api/mocks mockIPC but
-    // inline, avoiding ESM export stripping issues with addInitScript({ content }).
+    // The app's own dev mock (src/dev/mockTauri.ts) is the IPC shim; this only hands it the data.
     await page.addInitScript(
       ({ snap, cfg }) => {
-        // ponytail: minimal Tauri IPC shim — covers invoke + transformCallback
-        const callbacks = new Map<number, (data: unknown) => void>();
-
-        function registerCallback(
-          callback: (data: unknown) => void,
-          once = false,
-        ): number {
-          const id = (window.crypto.getRandomValues(new Uint32Array(1))[0] as number);
-          callbacks.set(id, (data: unknown) => {
-            if (once) callbacks.delete(id);
-            callback(data);
-          });
-          return id;
-        }
-
-        (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
-          transformCallback: registerCallback,
-          unregisterCallback: (id: number) => callbacks.delete(id),
-          runCallback: (id: number, data: unknown) => callbacks.get(id)?.(data),
-          callbacks,
-          invoke: async (cmd: string, args?: { event?: string; handler?: number }) => {
-            (window as unknown as { __INVOKED_CMDS__: string[] }).__INVOKED_CMDS__.push(cmd);
-            switch (cmd) {
-              case "plugin:event|listen": {
-                const listeners = (window as unknown as { __LISTENERS__: Record<string, number> })
-                  .__LISTENERS__;
-                listeners[args!.event!] = args!.handler!;
-                return args!.handler;
-              }
-              case "get_snapshot": return snap;
-              case "get_config": return cfg;
-              case "take_new_changelog": return null;
-              case "export_config": return null;
-              case "set_list_collapsed":
-              case "reorder_lists":
-              case "reorder_services":
-              case "add_services":
-              case "update_service":
-              case "remove_service":
-              case "add_list":
-              case "update_list":
-              case "remove_list":
-              case "reset_config":
-              case "update_settings":
-              case "import_config": return cfg;
-              default: return null;
-            }
-          },
-        };
-        (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
-          unregisterListener: () => {},
-        };
-        (window as unknown as { __INVOKED_CMDS__: string[] }).__INVOKED_CMDS__ = [];
-        (window as unknown as { __LISTENERS__: Record<string, number> }).__LISTENERS__ = {};
+        (window as unknown as { __MOCK__: unknown }).__MOCK__ = { snap, cfg };
       },
       { snap, cfg },
     );
 
-    await page.goto("/");
+    await page.goto("/?mock");
     // Wait until snapshot is loaded: busy = false means snapshot arrived
     await page.waitForSelector('[aria-label="Refresh"]:not([disabled])', {
       timeout: 10_000,

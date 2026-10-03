@@ -4,6 +4,7 @@ import * as api from "./api";
 import type { ChangelogEntry } from "./api";
 import type { Config, ListStatus, Service, ServiceDraft, Snapshot } from "./types";
 import { StatusHero } from "./components/StatusHero";
+import { HeroMenu } from "./components/HeroMenu";
 import { Icon } from "./components/Icon";
 import { ServiceList } from "./components/ServiceList";
 import { Settings } from "./components/Settings";
@@ -15,6 +16,7 @@ import { nextUpdatePhase } from "./utils/updateCheck";
 import { criticalTransitions, blockedTransitions } from "./utils/transitions";
 import { fireBatch, reconcilePending, type BatchEntry } from "./utils/alerts";
 import { mergeDelta } from "./utils/mergeDelta";
+import { LIST_EDGE_PX, LIST_GAP_PX, LIST_MAX_PX, columnCount, toColumns } from "./utils/listColumns";
 import {
   DndContext,
   PointerSensor,
@@ -87,6 +89,11 @@ export function isSettled(s: Snapshot): boolean {
   );
 }
 
+/** Edit order needs something to order. Asked by the hero menu and the native app menu. */
+export function canEditOrder(s: Snapshot | null): boolean {
+  return !!s?.lists.length;
+}
+
 // Thin sortable shell for list-level drag. Only mounted inside a DndContext (when reorderMode).
 // Calls useSortable and passes the ref/style/grip props down to ServiceList.
 export type GripProps = {
@@ -120,11 +127,23 @@ function SortableListItem({
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [config, setConfigState] = useState<Config | null>(null);
-  const [modal, setModal] = useState<ModalState>(null);
+  const [modal, setModalState] = useState<ModalState>(null);
+  // Mirrored for the app-menu listener, subscribed once at mount.
+  const modalRef = useRef<ModalState>(null);
+  function setModal(m: ModalState) {
+    modalRef.current = m;
+    setModalState(m);
+  }
   const [updatePhase, setUpdatePhaseState] = useState<UpdatePhase | null>(null);
   const [updateVersion, setUpdateVersionState] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [reorderMode, setReorderMode] = useState(false);
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  useEffect(() => {
+    const onResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   // Changelog shown once after a self-update (auto) or on demand via Settings button.
   const [changelog, setChangelog] = useState<ChangelogEntry[] | null>(null);
   // One inline message for anything the backend refused or couldn't save, plus the startup
@@ -133,6 +152,9 @@ function App() {
   const report = (err: unknown) => setNotice(String(err));
   // The last snapshot handed to the UI — the merge base for per-Service deltas.
   const prevSnapshotRef = useRef<Snapshot | null>(null);
+  // The ☰ drawer and the native ⇧⌘O share it: a second press ends ordering.
+  const toggleEditOrder = () =>
+    setReorderMode((on) => !on && canEditOrder(prevSnapshotRef.current));
   // The last *settled* snapshot — the Transition baseline. Unsettled snapshots are displayed but
   // never diffed and never become the baseline: their `all_down: false` means "not measured yet",
   // not "recovered" (ADR-0029).
@@ -388,6 +410,12 @@ function App() {
       if (!base) return;
       handleSnapshot(mergeDelta(base, d));
     }).then(keep);
+    // The native app menu (macOS). A dialog already open wins: replacing it would drop its edits.
+    api.onMenuAction((action) => {
+      if (modalRef.current) return;
+      if (action === "edit-order") toggleEditOrder();
+      else setModal({ kind: action === "settings" ? "settings" : "addList" });
+    }).then(keep);
     // Startup check
     backgroundUpdateCheck();
     // Background interval: re-check every 6 h so long-running machines stay current.
@@ -443,6 +471,8 @@ function App() {
   }
 
   const lists = snapshot?.lists ?? [];
+  // Edit order is one column: a straight vertical drag.
+  const cols = reorderMode ? 1 : columnCount(windowWidth, lists.length);
 
   async function handleSaveList(name: string, icon: string, critical: boolean) {
     if (modal?.kind === "addList") {
@@ -526,11 +556,30 @@ function App() {
   }
 
   return (
-    <main className={`app${snapshot?.cut_off ? " cut-off" : ""}`}>
+    <main
+      className={`app${snapshot?.cut_off ? " cut-off" : ""}`}
+      style={
+        {
+          "--cols": cols,
+          "--list-max": `${LIST_MAX_PX}px`,
+          "--list-gap": `${LIST_GAP_PX}px`,
+          "--list-edge": `${LIST_EDGE_PX}px`,
+        } as React.CSSProperties
+      }
+    >
       <StatusHero
         snapshot={snapshot}
+        icon={config?.status_icon ?? "rings"}
         onRefresh={api.refreshNow}
-        onOpenSettings={() => setModal({ kind: "settings" })}
+        menu={
+          <HeroMenu
+            onAddList={() => setModal({ kind: "addList" })}
+            onEditOrder={toggleEditOrder}
+            onOpenSettings={() => setModal({ kind: "settings" })}
+            canEditOrder={canEditOrder(snapshot)}
+            editingOrder={reorderMode}
+          />
+        }
         updatePhase={updatePhase}
         downloadProgress={downloadProgress}
         onDownload={handleDownload}
@@ -581,7 +630,9 @@ function App() {
               </SortableContext>
             </DndContext>
           ) : (
-            lists.map((list) => (
+            toColumns(lists, cols).map((column, c) => (
+              <div className="lists-col" key={c}>
+                {column.map((list) => (
               <ServiceList
                 key={list.id}
                 list={list}
@@ -605,19 +656,9 @@ function App() {
                 }
                 onCheckList={(listId) => api.checkList(listId).catch(report)}
               />
+                ))}
+              </div>
             ))
-          )}
-          {lists.length > 0 && !reorderMode && (
-            <div className="list-actions">
-              <button className="list-action-btn" onClick={() => setModal({ kind: "addList" })}>
-                <Icon name="plus" size={15} />
-                Add list
-              </button>
-              <button className="list-action-btn" onClick={() => setReorderMode(true)}>
-                <Icon name="order" size={15} />
-                Edit order
-              </button>
-            </div>
           )}
           {lists.length === 0 &&
             (config?.lists.length === 0 ? (

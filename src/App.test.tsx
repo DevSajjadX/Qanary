@@ -11,6 +11,7 @@ vi.mock("./api", () => ({
   checkList: vi.fn(),
   onStatusUpdate: vi.fn(),
   onServiceUpdate: vi.fn(),
+  onMenuAction: vi.fn(),
   takeNewChangelog: vi.fn(),
   getChangelog: vi.fn(),
   addServices: vi.fn(),
@@ -36,7 +37,6 @@ vi.mock("./update", () => ({
 }));
 
 import App from "./App";
-import { setOrbStyle } from "./orbStyle";
 import * as api from "./api";
 import * as update from "./update";
 import type { Config, Snapshot } from "./types";
@@ -83,7 +83,8 @@ const CONFIG: Config = {
   // Independent of the *_sound flags (ADR-0028) — a stored level survives every flag being off.
   notify_volume: 70,
   hide_dock: false,
-  tray_style: "rings",
+  status_icon: "rings",
+  tray_filled: false,
   last_changelog_version: null,
 };
 
@@ -96,6 +97,7 @@ beforeEach(() => {
   vi.mocked(api.getChangelog).mockResolvedValue([]);
   vi.mocked(api.onStatusUpdate).mockResolvedValue(() => {});
   vi.mocked(api.onServiceUpdate).mockResolvedValue(() => {});
+  vi.mocked(api.onMenuAction).mockResolvedValue(() => {});
   vi.mocked(api.refreshNow).mockResolvedValue();
   vi.mocked(api.checkNow).mockResolvedValue();
   vi.mocked(api.checkList).mockResolvedValue();
@@ -103,6 +105,12 @@ beforeEach(() => {
   vi.mocked(update.downloadUpdate).mockResolvedValue();
   vi.mocked(update.installAndRelaunch).mockResolvedValue();
 });
+
+/** Add list, Edit order and Settings sit in the hero's ☰ drawer. */
+async function heroAction(user: ReturnType<typeof userEvent.setup>, name: RegExp | string) {
+  await user.click(screen.getByRole("button", { name: "Menu" }));
+  await user.click(within(screen.getByRole("group", { name: "App actions" })).getByRole("button", { name }));
+}
 
 describe("App", () => {
   it('shows "All clear" headline for green overall severity', async () => {
@@ -123,8 +131,22 @@ describe("App", () => {
     vi.mocked(api.getSnapshot).mockResolvedValue({ ...SNAPSHOT, lists: [] });
     render(<App />);
     expect(await screen.findByText("Nothing to watch")).toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "Add list" }));
+    const empty = (await screen.findByText(/No lists yet/)).closest(".loading") as HTMLElement;
+    await user.click(within(empty).getByRole("button", { name: "Add list" }));
     expect(screen.getByRole("heading", { name: /list/i })).toBeInTheDocument();
+  });
+
+  it("with no lists, the app menu's Edit order does nothing", async () => {
+    let menu: (a: api.MenuAction) => void = () => {};
+    vi.mocked(api.onMenuAction).mockImplementation(async (cb) => {
+      menu = cb;
+      return () => {};
+    });
+    vi.mocked(api.getSnapshot).mockResolvedValue({ ...SNAPSHOT, lists: [] });
+    render(<App />);
+    await screen.findByText(/No lists yet/);
+    act(() => menu("edit-order"));
+    expect(screen.queryByRole("button", { name: /^done$/i })).not.toBeInTheDocument();
   });
 
   it("renders list name from snapshot", async () => {
@@ -149,7 +171,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
     await user.click(screen.getByRole("button", { name: /^save$/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("disk full");
@@ -162,7 +184,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
     await user.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledTimes(1));
@@ -213,6 +235,7 @@ describe("App", () => {
     // The rows leave the DOM once the collapse animation has played.
     await waitFor(() => expect(screen.queryByText("Google")).not.toBeInTheDocument());
 
+    await user.click(screen.getAllByTitle("List options")[0]);
     await user.click(screen.getByRole("button", { name: /edit order/i }));
     await user.click(screen.getByRole("button", { name: /^done$/i }));
     expect(screen.queryByText("Google")).not.toBeInTheDocument();
@@ -230,6 +253,20 @@ describe("App", () => {
     await user.click(items[1]);
     expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
     expect(screen.getAllByTitle("Drag to reorder").length).toBeGreaterThan(0);
+  });
+
+  it("in reorder mode a list can still be collapsed, so long lists are easier to move", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.setListCollapsed).mockResolvedValue(CONFIG);
+    render(<App />);
+    await waitFor(() => screen.getByText("Google"));
+
+    await user.click(screen.getAllByTitle("List options")[0]);
+    await user.click(screen.getByRole("button", { name: /edit order/i }));
+    await user.click(screen.getAllByTitle("Collapse")[0]);
+    expect(api.setListCollapsed).toHaveBeenCalledWith("internet", true);
+    await waitFor(() => expect(screen.queryByText("Google")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
   });
 
   // R3: a layout edit painted with a bare setSnapshot left the delta merge base behind, so the
@@ -276,7 +313,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
     await user.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() =>
@@ -290,7 +327,7 @@ describe("App", () => {
   // checking from Settings (or the reverse) could re-download or install a different release.
   describe("updates have one owner", () => {
     async function openSettings(user: ReturnType<typeof userEvent.setup>) {
-      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      await heroAction(user, /^settings$/i);
     }
 
     it("a newer release found after a download installs the downloaded one, once", async () => {
@@ -349,28 +386,102 @@ describe("App", () => {
     const second = render(<App />);
     expect(await screen.findByText("You're offline")).toBeInTheDocument();
     expect(second.container.querySelector(".hero")).toHaveClass("hero-offline");
+    // No network on this machine: a refresh can't help, so the orb doesn't offer one.
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled();
+    expect(second.container.querySelector(".status-orb .orb-icon .orb-slash")).not.toBeNull();
   });
 
-  it("Add list and Edit order sit under the lists; Edit order hides them until Done", async () => {
+  it("the ☰ opens Add list, Edit order and Settings, nearest first, and closes after a pick", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+
+    const menu = screen.getByRole("button", { name: "Menu" });
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("group", { name: "App actions" })).not.toBeInTheDocument();
+    await user.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    const drawer = screen.getByRole("group", { name: "App actions" });
+    expect(within(drawer).getAllByRole("button").map((b) => b.getAttribute("aria-label")))
+      .toEqual(["Add list", "Edit order", "Settings"]);
+
+    await user.click(within(drawer).getByRole("button", { name: "Add list" }));
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("heading", { name: /list/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(container.querySelector(".list-actions")).toBeNull();
+  });
+
+  it("Escape or a click outside closes the ☰ drawer; Escape hands focus back to the ☰", async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^add list$/i }));
+    const menu = screen.getByRole("button", { name: "Menu" });
+    await user.click(menu);
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Add list" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(menu).toHaveFocus();
+
+    await user.click(menu);
+    await user.click(screen.getByText("All clear"));
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("the ☰ Edit order starts ordering, shows pressed, and ends it again", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+
+    await heroAction(user, "Edit order");
+    expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Menu" }));
+    await user.click(screen.getByRole("button", { name: "Edit order", pressed: true }));
+    expect(screen.queryByRole("button", { name: /^done$/i })).not.toBeInTheDocument();
+  });
+
+  it("with no lists, the ☰ Edit order is off", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.getSnapshot).mockResolvedValue({ ...SNAPSHOT, lists: [] });
+    render(<App />);
+    expect(await screen.findByText("Nothing to watch")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Menu" }));
+    expect(screen.getByRole("button", { name: "Edit order" })).toBeDisabled();
+  });
+
+  it("the native app menu opens Settings, Add list and Edit order, but never over an open dialog", async () => {
+    let menu: (a: api.MenuAction) => void = () => {};
+    vi.mocked(api.onMenuAction).mockImplementation(async (cb) => {
+      menu = cb;
+      return () => {};
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => screen.getByText("All clear"));
+
+    act(() => menu("settings"));
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    act(() => menu("add-list")); // would drop pending Settings edits
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+    act(() => menu("add-list"));
     expect(screen.getByRole("heading", { name: /list/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^cancel$/i }));
 
-    await user.click(screen.getByRole("button", { name: /^edit order$/i }));
-    expect(screen.queryByRole("button", { name: /^add list$/i })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /^done$/i }));
-    expect(screen.getByRole("button", { name: /^add list$/i })).toBeInTheDocument();
+    act(() => menu("edit-order"));
+    expect(screen.getByRole("button", { name: /^done$/i })).toBeInTheDocument();
+    act(() => menu("edit-order")); // a second ⇧⌘O ends ordering, like the ☰ drawer's button
+    expect(screen.queryByRole("button", { name: /^done$/i })).not.toBeInTheDocument();
   });
 
   it("each Settings card is a named group with its heading first", async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
 
     for (const name of ["Appearance", "Config", /^IP providers/, /^Probe interval/, /^Critical-list alerts/, "System"]) {
       const group = screen.getByRole("group", { name });
@@ -378,33 +489,44 @@ describe("App", () => {
     }
   });
 
-  describe("status icon style (Rings / Pulse)", () => {
-    afterEach(() => setOrbStyle("rings")); // the choice is module-level state; don't leak it
+  describe("status icon (Rings / Pulse)", () => {
+    // The icon is a config setting (the backend draws it in the menu bar too).
+    async function renderPulse() {
+      vi.mocked(api.getConfig).mockResolvedValue({ ...CONFIG, status_icon: "pulse" });
+      const r = render(<App />);
+      await waitFor(() => expect(r.container.querySelector(".status-orb .orb-icon-pulse")).not.toBeNull());
+      return r;
+    }
 
-    it("defaults to Rings and Pulse swaps the hero orb's icon", async () => {
+    it("defaults to Rings; Pulse swaps the hero orb's icon once saved", async () => {
       const user = userEvent.setup();
       const { container } = render(<App />);
       await waitFor(() => screen.getByText("All clear"));
       expect(container.querySelector(".status-orb .orb-icon")).toHaveClass("orb-icon-rings");
 
-      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      await heroAction(user, /^settings$/i);
       const group = within(screen.getByRole("radiogroup", { name: "Status icon" }));
       expect(group.getByRole("radio", { name: /rings/i })).toHaveAttribute("aria-checked", "true");
       await user.click(group.getByRole("radio", { name: /pulse/i }));
-
       expect(group.getByRole("radio", { name: /pulse/i })).toHaveAttribute("aria-checked", "true");
+      expect(container.querySelector(".status-orb .orb-icon")).toHaveClass("orb-icon-rings");
+
+      vi.mocked(api.updateSettings).mockResolvedValue({ ...CONFIG, status_icon: "pulse" });
+      await user.click(screen.getByRole("button", { name: /^save$/i }));
+      await waitFor(() =>
+        expect(api.updateSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ status_icon: "pulse", tray_filled: false }),
+        ),
+      );
       const orb = container.querySelector(".status-orb .orb-icon");
       expect(orb).toHaveClass("orb-icon-pulse");
       // Calm = a trace with a sweep running along it.
       expect(orb?.querySelector(".pulse-base")).not.toBeNull();
       expect(orb?.querySelector(".pulse-sweep")).not.toBeNull();
-      expect(localStorage.getItem("qanary-orb-style")).toBe("pulse");
     });
 
     it("is one smooth gradient line with a light that runs along the wave and drags a fading tail", async () => {
-      setOrbStyle("pulse");
-      const { container } = render(<App />);
-      await waitFor(() => screen.getByText("All clear"));
+      const { container } = await renderPulse();
       const icon = container.querySelector(".status-orb .orb-icon")!;
       expect(icon.querySelectorAll(".pulse-base")).toHaveLength(1); // one line, not pieces
       const base = icon.querySelector(".pulse-base")!;
@@ -472,10 +594,8 @@ describe("App", () => {
 
     it("gives every Pulse icon its own gradient ids (hero orb and Settings sample)", async () => {
       const user = userEvent.setup();
-      setOrbStyle("pulse");
-      const { baseElement } = render(<App />);
-      await waitFor(() => screen.getByText("All clear"));
-      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      const { baseElement } = await renderPulse();
+      await heroAction(user, /^settings$/i);
       const ids = Array.from(baseElement.querySelectorAll("linearGradient, radialGradient, mask")).map((e) => e.id);
       expect(ids.length).toBeGreaterThan(3);
       expect(new Set(ids).size).toBe(ids.length); // no id appears twice in the document
@@ -486,9 +606,7 @@ describe("App", () => {
         matches: q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {},
         addListener() {}, removeListener() {}, dispatchEvent: () => false, onchange: null,
       }));
-      setOrbStyle("pulse");
-      const { container } = render(<App />);
-      await waitFor(() => screen.getByText("All clear"));
+      const { container } = await renderPulse();
       const icon = container.querySelector(".status-orb .orb-icon")!;
       expect(icon.querySelector(".pulse-base")).not.toBeNull();
       expect(icon.querySelector(".pulse-sweep")).toBeNull();
@@ -496,8 +614,7 @@ describe("App", () => {
       vi.unstubAllGlobals();
     });
 
-    it("draws the alarm as a flat line with an X, and offline as the line struck through", async () => {
-      setOrbStyle("pulse");
+    it("draws the alarm as a flat line with an X, and offline as the shared Wi-Fi-off icon", async () => {
       vi.mocked(api.getSnapshot).mockResolvedValue({
         ...SNAPSHOT,
         overall: "red",
@@ -505,7 +622,7 @@ describe("App", () => {
           services: [{ ...SNAPSHOT.lists[0].services[0], state: "down",
             endpoints: [{ id: "e1", host: "google.com", state: "down", latency_ms: null }] }] }],
       });
-      const alarm = render(<App />);
+      const alarm = await renderPulse();
       await screen.findByText("Something’s wrong");
       const icon = alarm.container.querySelector(".status-orb .orb-icon");
       expect(icon?.querySelector(".pulse-flat")).not.toBeNull();
@@ -513,10 +630,12 @@ describe("App", () => {
       alarm.unmount();
 
       vi.mocked(api.getSnapshot).mockResolvedValue({ ...SNAPSHOT, overall: "red", cut_off: true });
-      const offline = render(<App />);
+      const offline = await renderPulse();
       await screen.findByText("You're offline");
       const off = offline.container.querySelector(".status-orb .orb-icon");
-      expect(off?.querySelector(".pulse-flat")).not.toBeNull();
+      expect(off?.querySelector(".orb-slash")).not.toBeNull();
+      expect(off?.querySelectorAll(".rg")).toHaveLength(3);
+      expect(off?.querySelector(".pulse-flat")).toBeNull();
       expect(off?.querySelector(".pulse-x")).toBeNull();
     });
   });
@@ -545,7 +664,7 @@ describe("App", () => {
       expect(screen.getByText(/pinging/i)).toBeInTheDocument(); // only the row says so
     });
 
-    it("an unsettled snapshot (a full round in flight) is busy: gray, pulsing", async () => {
+    it("an unsettled snapshot (a full round in flight) is busy: yellow, pulsing", async () => {
       vi.mocked(api.getSnapshot).mockResolvedValue({
         ...SNAPSHOT,
         settled: false,
@@ -566,64 +685,55 @@ describe("App", () => {
     });
   });
 
-  describe("menu bar icon style (four looks)", () => {
-    afterEach(() => setOrbStyle("rings"));
-
+  describe("menu bar: outline or filled", () => {
     async function openSettings() {
       const user = userEvent.setup();
       render(<App />);
       await waitFor(() => screen.getByText("All clear"));
-      await user.click(screen.getByRole("button", { name: /^settings$/i }));
-      return { user, group: within(screen.getByRole("radiogroup", { name: "Menu bar icon" })) };
+      await heroAction(user, /^settings$/i);
+      return { user, group: within(screen.getByRole("radiogroup", { name: "Menu bar" })) };
     }
 
-    it("offers four looks, the saved one selected, separate from the in-app status icon", async () => {
-      const { group } = await openSettings();
-      const names = ["Rings", "Pulse", "Filled rings", "Filled pulse"];
-      expect(group.getAllByRole("radio").map((r) => r.textContent)).toEqual(names);
-      expect(group.getByRole("radio", { name: "Rings" })).toHaveAttribute("aria-checked", "true");
-      for (const n of names.slice(1)) {
-        expect(group.getByRole("radio", { name: n })).toHaveAttribute("aria-checked", "false");
-      }
-      expect(screen.getByRole("radiogroup", { name: "Status icon" })).toBeInTheDocument();
-    });
-
-    it("shows every look in every state it can take, small", async () => {
-      const { group } = await openSettings();
-      for (const radio of group.getAllByRole("radio")) {
-        const icons = Array.from(radio.querySelectorAll("svg.tray-icon"));
-        expect(icons.map((i) => i.getAttribute("data-mood"))).toEqual([
-          "ok", "warn", "alarm", "offline", "busy",
-        ]);
-      }
-    });
-
-    it("is saved with the rest of the form and leaves the in-app icon alone", async () => {
-      vi.mocked(api.updateSettings).mockResolvedValue({ ...CONFIG, tray_style: "pulse-filled" });
+    it("offers Outline and Filled of the chosen status icon, the saved one selected", async () => {
       const { user, group } = await openSettings();
-      await user.click(group.getByRole("radio", { name: "Filled pulse" }));
-      expect(group.getByRole("radio", { name: "Filled pulse" })).toHaveAttribute("aria-checked", "true");
-      // Nothing is written until Save — the backend draws the icon, so it is a config setting.
+      expect(group.getAllByRole("radio").map((r) => r.textContent)).toEqual(["Outline", "Filled"]);
+      expect(group.getByRole("radio", { name: "Outline" })).toHaveAttribute("aria-checked", "true");
+      const looks = () =>
+        group.getAllByRole("radio").map((r) => {
+          const svg = r.querySelector("svg.tray-icon")!;
+          return `${svg.getAttribute("data-icon")}/${svg.getAttribute("data-filled")}`;
+        });
+      expect(looks()).toEqual(["rings/false", "rings/true"]);
+
+      const icons = within(screen.getByRole("radiogroup", { name: "Status icon" }));
+      await user.click(icons.getByRole("radio", { name: /pulse/i }));
+      expect(looks()).toEqual(["pulse/false", "pulse/true"]);
+    });
+
+    it("is saved with the rest of the form", async () => {
+      vi.mocked(api.updateSettings).mockResolvedValue({ ...CONFIG, tray_filled: true });
+      const { user, group } = await openSettings();
+      await user.click(group.getByRole("radio", { name: "Filled" }));
+      expect(group.getByRole("radio", { name: "Filled" })).toHaveAttribute("aria-checked", "true");
       expect(api.updateSettings).not.toHaveBeenCalled();
-      expect(localStorage.getItem("qanary-orb-style")).not.toBe("pulse");
 
       await user.click(screen.getByRole("button", { name: /^save$/i }));
       await waitFor(() =>
         expect(api.updateSettings).toHaveBeenCalledWith(
-          expect.objectContaining({ tray_style: "pulse-filled" }),
+          expect.objectContaining({ status_icon: "rings", tray_filled: true }),
         ),
       );
     });
 
     it("Cancel discards a pending choice", async () => {
       const { user, group } = await openSettings();
-      await user.click(group.getByRole("radio", { name: "Filled rings" }));
+      await user.click(group.getByRole("radio", { name: "Filled" }));
       await user.click(screen.getByRole("button", { name: /^cancel$/i }));
       expect(api.updateSettings).not.toHaveBeenCalled();
 
-      await user.click(screen.getByRole("button", { name: /^settings$/i }));
-      const again = within(screen.getByRole("radiogroup", { name: "Menu bar icon" }));
-      expect(again.getByRole("radio", { name: "Rings" })).toHaveAttribute("aria-checked", "true");
+      await heroAction(user, /^settings$/i);
+      const again = within(screen.getByRole("radiogroup", { name: "Menu bar" }));
+      expect(again.getByRole("radio", { name: "Outline" })).toHaveAttribute("aria-checked", "true");
     });
   });
 
@@ -633,7 +743,7 @@ describe("App", () => {
       const user = userEvent.setup();
       render(<App />);
       await waitFor(() => screen.getByText("All clear"));
-      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      await heroAction(user, /^settings$/i);
 
       await user.click(screen.getByRole("button", { name: /theme: system/i }));
       expect(screen.getByRole("button", { name: /theme: light/i })).toBeInTheDocument();
@@ -645,7 +755,7 @@ describe("App", () => {
       const user = userEvent.setup();
       render(<App />);
       await waitFor(() => screen.getByText("All clear"));
-      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      await heroAction(user, /^settings$/i);
 
       await user.click(screen.getByRole("button", { name: /reset to defaults/i }));
       expect(screen.getByText("Reset to defaults?")).toBeInTheDocument();
@@ -659,7 +769,7 @@ describe("App", () => {
       vi.mocked(api.resetConfig).mockReturnValue(new Promise(() => {}));
       render(<App />);
       await waitFor(() => screen.getByText("All clear"));
-      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      await heroAction(user, /^settings$/i);
 
       await user.click(screen.getByRole("button", { name: /reset to defaults/i }));
       await user.click(screen.getByRole("button", { name: /yes, reset/i }));
@@ -683,7 +793,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
 
     expect(screen.getByRole("heading", { name: /^settings$/i })).toBeInTheDocument();
   });
@@ -693,7 +803,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
 
     // Config card legend and both buttons must be rendered
     expect(screen.getByText("Config")).toBeInTheDocument();
@@ -709,7 +819,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
     await user.click(screen.getByRole("button", { name: /export/i }));
 
     // Dialog was shown; cancel means exportConfig is NOT invoked
@@ -726,7 +836,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
     await user.click(screen.getByRole("button", { name: /import/i }));
 
     // Confirmation modal appears; importConfig must NOT have run yet.
@@ -748,7 +858,7 @@ describe("App", () => {
     async function openAlertSettings(user: ReturnType<typeof userEvent.setup>) {
       render(<App />);
       await waitFor(() => screen.getByText("All clear"));
-      await user.click(screen.getByRole("button", { name: /^settings$/i }));
+      await heroAction(user, /^settings$/i);
       return {
         slider: screen.getByLabelText(/sound volume/i) as HTMLInputElement,
         downSound: screen.getByRole("checkbox", { name: /sound on outage/i }),
@@ -826,7 +936,7 @@ describe("App", () => {
       render(<App />);
       await waitFor(() => screen.getByText("All clear"));
 
-      await user.click(screen.getByRole("button", { name: /^add list$/i }));
+      await heroAction(user, /^add list$/i);
       const critical = screen.getByRole("switch", { name: /critical/i });
       expect(critical).toHaveAttribute("aria-checked", "false");
       await user.type(screen.getByLabelText("Name"), "Work");
@@ -841,7 +951,7 @@ describe("App", () => {
       const user = userEvent.setup();
       render(<App />);
       await waitFor(() => screen.getByText("All clear"));
-      await user.click(screen.getByRole("button", { name: /^add list$/i }));
+      await heroAction(user, /^add list$/i);
       await user.click(screen.getByRole("button", { name: /^cancel$/i }));
       expect(api.addList).not.toHaveBeenCalled();
       expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
@@ -867,11 +977,12 @@ describe("App", () => {
       expect(screen.getByText("G")).toBeInTheDocument();
     });
 
-    it("a Critical list wears the badge; it turns urgent only when the list is down", async () => {
+    it("fully down, a Critical list's chip turns solid red and pulses; a normal list's only tints", async () => {
       vi.mocked(api.getSnapshot).mockResolvedValue(snapWith({ critical: true }));
       const first = render(<App />);
-      await waitFor(() => screen.getByText("Critical"));
-      expect(first.container.querySelector(".crit-pill")).not.toHaveClass("crit-pill-down");
+      await waitFor(() => screen.getByRole("img", { name: "Critical list" }));
+      expect(first.container.querySelector(".list-name")).not.toHaveClass("list-name-down");
+      expect(first.container.querySelector(".list-name")).not.toHaveClass("list-name-alarm");
       first.unmount();
 
       const down = snapWith({
@@ -881,8 +992,16 @@ describe("App", () => {
       });
       vi.mocked(api.getSnapshot).mockResolvedValue(down);
       const second = render(<App />);
-      await waitFor(() => screen.getByText("Critical"));
-      expect(second.container.querySelector(".crit-pill")).toHaveClass("crit-pill-down");
+      await waitFor(() => screen.getByRole("img", { name: "Critical list is down" }));
+      expect(second.container.querySelector(".list-name")).toHaveClass("list-name-down", "list-name-alarm");
+      second.unmount();
+
+      // A normal list fully down gets the soft tint only.
+      vi.mocked(api.getSnapshot).mockResolvedValue({ ...down, lists: [{ ...down.lists[0], critical: false }] });
+      const third = render(<App />);
+      await waitFor(() => screen.getByText("All unreachable"));
+      expect(third.container.querySelector(".list-name")).toHaveClass("list-name-down");
+      expect(third.container.querySelector(".list-name")).not.toHaveClass("list-name-alarm");
     });
 
     it("a fully-down list says All unreachable in place of the count", async () => {
@@ -1186,6 +1305,7 @@ describe("App", () => {
         render(<App />);
         await waitFor(() => screen.getByText("Google"));
         expect(screen.getByRole("button", { name: "Google" })).toBeInTheDocument();
+        await user.click(screen.getAllByTitle("List options")[0]);
         await user.click(screen.getByRole("button", { name: /edit order/i }));
         expect(screen.queryByRole("button", { name: "Google" })).not.toBeInTheDocument();
         expect(screen.getByText("Google")).toBeInTheDocument();
@@ -1726,7 +1846,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
     await user.click(screen.getByRole("button", { name: /import/i }));
     await user.click(await screen.findByRole("button", { name: /overwrite/i }));
 
@@ -1742,7 +1862,7 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => screen.getByText("All clear"));
 
-    await user.click(screen.getByRole("button", { name: /^settings$/i }));
+    await heroAction(user, /^settings$/i);
     await user.click(screen.getByRole("button", { name: /import/i }));
 
     await waitFor(() =>

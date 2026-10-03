@@ -1,11 +1,11 @@
 import { useId } from "react";
 import type React from "react";
-import type { OrbStyle } from "../orbStyle";
+import type { StatusIcon } from "../types";
 
 /** What the orb shows. One value drives the color, the icon and the motion. */
 export type Mood = "ok" | "warn" | "alarm" | "offline" | "busy" | "idle";
 
-export const ORB_STYLE_LABEL: Record<OrbStyle, string> = {
+export const ORB_STYLE_LABEL: Record<StatusIcon, string> = {
   rings: "Rings",
   pulse: "Pulse",
 };
@@ -27,6 +27,17 @@ const RINGS_ALARM = (
     <circle className="rg" cx="12" cy="12" r="10.6" opacity="0.18" strokeDasharray="3.4 2.8" />
   </>
 );
+// Offline: Wi-Fi off, the same in every style. Its arcs span the rings' 21-unit width as a 90° wedge
+// over one focal point, dashed like Alarm's; the slash is Offline's mark.
+const WIFI_OFF = (
+  <>
+    <path className="rg" d="M7.76 15.26A6 6 0 0 1 16.24 15.26" opacity="1" strokeDasharray="2.2 1.8" />
+    <path className="rg" d="M4.58 12.08A10.5 10.5 0 0 1 19.42 12.08" opacity="0.75" strokeDasharray="2.8 2.2" />
+    <path className="rg" d="M1.39 8.89A15 15 0 0 1 22.61 8.89" opacity="0.5" strokeDasharray="3.4 2.6" />
+    <path pathLength={1} d="M12 19.5h.01" strokeWidth="2.4" />
+    <path className="orb-slash" pathLength={1} d="M4.5 4.5l15 15" strokeWidth="2.2" />
+  </>
+);
 const RINGS: Record<Mood, React.ReactNode> = {
   ok: RINGS_OK,
   busy: RINGS_OK,
@@ -40,13 +51,7 @@ const RINGS: Record<Mood, React.ReactNode> = {
     </>
   ),
   alarm: RINGS_ALARM,
-  // Offline keeps the slash; Alarm does not — the two must read apart.
-  offline: (
-    <>
-      {RINGS_ALARM}
-      <path pathLength={1} d="M4.5 4.5l15 15" strokeWidth="2.2" />
-    </>
-  ),
+  offline: WIFI_OFF,
 };
 
 // ---------- Pulse: a canary heartbeat ----------
@@ -54,7 +59,7 @@ const RINGS: Record<Mood, React.ReactNode> = {
 // along it the way a monitor's trace does: it slides in from beyond the left end, rushes up and down
 // the beat, slides out past the right end — and it drags a tail that fades behind it. It then rests
 // *off the line*, out of sight, until the next beat (so it never sits stuck on the end). Calm = a clean beat, warn = a shallower, faster one, alarm = a heartbeat that stutters and drains into a flat line
-// marked with an X, offline = the same line struck through (its dashes drift on, and the slash blinks softly).
+// marked with an X. Offline is the shared Wi-Fi-off icon, not a line.
 //
 // The light is a few radial-gradient dots that SVG moves along the heartbeat's own path
 // (<animateMotion>), each a little later than the one before, so the tail stretches where the light
@@ -193,12 +198,6 @@ const trace = (pts: readonly Pt[], gid: string, dur?: string) => {
     </>
   );
 };
-const flatline = (gid: string) => (
-  <>
-    {pulseDefs(gid)}
-    <path className="pulse-flat" d={FLAT_LINE} stroke={`url(#${gid}-fade)`} />
-  </>
-);
 /** `animate` is false for users who asked for reduced motion: the line stays, the glow goes. */
 type PulseNode = (gid: string, animate: boolean) => React.ReactNode;
 const PULSE: Record<Mood, PulseNode> = {
@@ -221,15 +220,10 @@ const PULSE: Record<Mood, PulseNode> = {
       <path className="pulse-x" pathLength={1} d="M9 8l6 8M15 8l-6 8" />
     </>
   ),
-  offline: (gid) => (
-    <>
-      {flatline(gid)}
-      <path className="pulse-slash" pathLength={1} d="M4.5 4.5l15 15" strokeWidth="2.2" />
-    </>
-  ),
+  offline: () => WIFI_OFF,
 };
 
-export const ORB_ICON: Record<OrbStyle, Record<Mood, PulseNode>> = {
+export const ORB_ICON: Record<StatusIcon, Record<Mood, PulseNode>> = {
   // Rings have no gradient, so they ignore the id.
   rings: {
     ok: () => RINGS.ok,
@@ -242,13 +236,24 @@ export const ORB_ICON: Record<OrbStyle, Record<Mood, PulseNode>> = {
   pulse: PULSE,
 };
 
+/** The orb's hover refresh arrow, drawn in the orb icons' own frame and stroke so it reads as one
+ *  of them: an arc the size of the middle ring with an open arrowhead at its end. */
+export function OrbRefresh() {
+  return (
+    <svg className="orb-refresh-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M19.5 12A7.5 7.5 0 1 1 17.3 6.7" />
+      <path d="M14.3 6.7H17.3V3.7" />
+    </svg>
+  );
+}
+
 /** The orb's icon. Re-keyed per style + mood by the caller so the draw-in replays on change. */
 export function OrbIcon({
   style,
   mood,
   className = "",
 }: {
-  style: OrbStyle;
+  style: StatusIcon;
   mood: Mood;
   className?: string;
 }) {
@@ -267,7 +272,7 @@ export function OrbIcon({
 }
 
 /** A small live sample of a style (calm mood) for the Settings picker. */
-export function OrbThumb({ style }: { style: OrbStyle }) {
+export function OrbThumb({ style }: { style: StatusIcon }) {
   return (
     <span className="orb-thumb" aria-hidden="true">
       <OrbIcon style={style} mood="ok" />

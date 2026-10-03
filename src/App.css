@@ -77,6 +77,11 @@ body {
 }
 
 .app {
+  /* The content is one centered block, only as wide as its list columns: each at most
+     --list-max. --cols and the sizes come from App.tsx (utils/listColumns.ts). The background
+     still fills the window. */
+  --content: calc(var(--cols, 1) * var(--list-max, 480px) + (var(--cols, 1) - 1) * var(--list-gap, 7px));
+  --gutter: max(var(--list-edge, 12px), (100% - var(--content)) / 2);
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -94,28 +99,30 @@ body {
 @property --sev {
   syntax: "<color>";
   inherits: true;
-  initial-value: #2fd08a;
+  initial-value: #1a9c61; /* --mood-ok */
 }
 
 .hero {
-  --sev: var(--state-up);
+  --sev: var(--mood-ok);
   position: relative;
-  padding: 10px 12px 0; /* the lists' top padding supplies the gap below (see .lists) */
+  padding: 10px var(--gutter) 0; /* the lists' top padding supplies the gap below (see .lists) */
   transition: --sev 0.7s ease;
 }
 .hero-ok {
-  --sev: var(--state-up);
+  --sev: var(--mood-ok);
 }
 .hero-warn {
-  --sev: var(--state-blocked);
+  --sev: var(--mood-warn);
 }
 .hero-alarm {
-  --sev: var(--state-down);
+  --sev: var(--mood-alarm);
 }
 .hero-offline {
-  --sev: var(--state-offline);
+  --sev: var(--mood-offline);
 }
-.hero-busy,
+.hero-busy {
+  --sev: var(--mood-busy);
+}
 .hero-idle {
   --sev: var(--state-checking);
 }
@@ -173,15 +180,15 @@ body {
   }
 }
 
-.hero-gear {
+/* ☰ top right; it opens a glass drawer to its left with Add list, Edit order and Settings
+   (HeroMenu.tsx). */
+.hero-btn {
+  position: relative;
+  z-index: 1; /* above the drawer, which grows out from under it */
   display: grid;
   place-items: center;
   width: 34px;
   height: 34px;
-  /* Centre the gear over the lists' right-hand icon column (the header chevron and each row's ⋮):
-     list inset + card border + header padding + half a 28px button, less the hero's own side
-     padding and half the gear. */
-  margin-right: calc(var(--sp-3) + 1px + 10px + 14px - 12px - 17px);
   padding: 0;
   border-radius: 50%;
   border: 1px solid var(--btn-border);
@@ -191,23 +198,253 @@ body {
   cursor: pointer;
   transition:
     background 0.2s,
+    border-color 0.2s,
+    box-shadow 0.2s,
     color 0.2s,
     transform 0.2s;
 }
-.hero-gear svg {
-  transition: transform 0.5s cubic-bezier(0.3, 1.3, 0.5, 1);
-}
-.hero-gear:hover {
+.hero-btn:hover {
   background: var(--glass-strong);
   color: var(--text-strong);
 }
-.hero-gear:hover svg {
-  transform: rotate(75deg);
-}
-.hero-gear:active {
+.hero-btn:active {
   transform: scale(0.92);
 }
-.hero-gear:focus-visible,
+/* Centre the ☰ over the lists' right-hand icon column (the header chevron and each row's ⋮):
+   list inset + card border + header padding + half a 28px button, less the hero's own side
+   padding and half the ☰. */
+.hero-menu {
+  position: relative;
+  z-index: 5; /* the tips hang over the headline */
+  margin-right: calc(var(--sp-3) + 1px + 10px + 14px - 12px - 17px);
+}
+/* Open, the ☰ drops its own circle and becomes the drawer's end cap, muted like the actions
+   beside it and full strength only under the pointer. */
+.hero-menu-open .hero-menu-btn {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.hero-menu-open .hero-menu-btn:hover {
+  background: var(--glass-strong);
+  color: var(--text-strong);
+}
+/* ☰ → ›, pointing the way the drawer closes. Each outer bar turns about its own centre onto a
+   chevron arm (Lucide's chevron-right, m9 18 6-6-6-6: two 8.49-long arms meeting at 15,12), and
+   the middle bar shrinks into the tip. */
+.hero-burger {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  overflow: visible;
+}
+.hero-burger path {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    transform 0.45s cubic-bezier(0.3, 1.3, 0.5, 1),
+    opacity 0.2s;
+}
+.hero-burger-bot {
+  transition-delay: 0.04s;
+}
+/* Centre 12,7 → 12,9; length 14 → 8.49 (scaleX 0.606). */
+.hero-menu-btn[aria-expanded="true"] .hero-burger-top {
+  transform: translateY(2px) rotate(45deg) scaleX(0.606);
+}
+.hero-menu-btn[aria-expanded="true"] .hero-burger-mid {
+  opacity: 0;
+  transform: translateX(3px) scaleX(0);
+}
+/* Centre 12,17 → 12,15. */
+.hero-menu-btn[aria-expanded="true"] .hero-burger-bot {
+  transform: translateY(-2px) rotate(-45deg) scaleX(0.606);
+}
+
+/* The drawer: a glass capsule 3px around the ☰ that stretches out to the left. The actions sit
+   right to left so the nearest comes first, in Tab order and in the entrance. */
+.hero-drawer {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  height: 40px;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 4px;
+  padding: 3px calc(3px + 34px + 4px) 3px 3px;
+}
+.hero-drawer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  z-index: -1;
+  border-radius: 20px;
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  box-shadow: var(--btn-shadow);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+/* Durations and delays: the last action lands at 40 + 2 × 45 + 300 = 430 ms, and closing takes
+   320 ms, both inside DRAWER_MS (HeroMenu.tsx, 440). Closing slides the capsule shut into the ☰,
+   the actions riding along with it. */
+.hero-drawer[data-anim="open"]::before {
+  animation: hero-drawer-grow 0.42s cubic-bezier(0.34, 1.25, 0.5, 1) both;
+}
+.hero-drawer[data-anim="close"]::before {
+  animation: hero-drawer-shrink 0.32s cubic-bezier(0.55, 0, 0.25, 1) both;
+}
+.hero-drawer[data-anim="close"] {
+  pointer-events: none;
+}
+@keyframes hero-drawer-grow {
+  from {
+    width: 40px;
+  }
+}
+/* It ends 3px around the ☰'s own circle; the last frames fade that ring out. */
+@keyframes hero-drawer-shrink {
+  85% {
+    opacity: 1;
+  }
+  to {
+    width: 40px;
+    opacity: 0;
+  }
+}
+
+.hero-drawer-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background 0.2s,
+    color 0.2s,
+    transform 0.2s;
+}
+.hero-drawer[data-anim="open"] .hero-drawer-btn {
+  animation: hero-item-in 0.3s cubic-bezier(0.3, 1.3, 0.5, 1) calc(40ms + var(--i) * 45ms) both;
+}
+.hero-drawer[data-anim="close"] .hero-drawer-btn {
+  animation: hero-item-out 0.32s cubic-bezier(0.55, 0, 0.25, 1) both;
+}
+@keyframes hero-item-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px) scale(0.4) rotate(-45deg);
+  }
+}
+/* Each action travels to the ☰: one 34px button plus the 4px gap per step. */
+@keyframes hero-item-out {
+  40% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(calc((var(--i) + 1) * 38px)) scale(0.4) rotate(45deg);
+  }
+}
+.hero-drawer-btn svg {
+  transition: transform 0.5s cubic-bezier(0.3, 1.3, 0.5, 1);
+}
+.hero-drawer-btn:hover:not(:disabled) {
+  background: var(--glass-strong);
+  color: var(--text-strong);
+}
+.hero-drawer-btn:active:not(:disabled) {
+  transform: scale(0.9);
+}
+.hero-drawer-settings:hover svg {
+  transform: rotate(75deg);
+}
+.hero-drawer-add:hover svg {
+  transform: rotate(90deg);
+}
+/* The up and down arrows trade places. */
+.hero-drawer-order:hover:not(:disabled) svg {
+  transform: scaleY(-1);
+}
+.hero-drawer-btn[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--brand) 24%, transparent);
+  color: var(--text-strong);
+}
+.hero-drawer-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The action's name, under it on hover or keyboard focus. */
+.hero-tip {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  translate: -50% -4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  background: light-dark(var(--glass-strong), rgba(30, 30, 36, 0.75));
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--btn-shadow);
+  color: var(--text-strong);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.12s,
+    translate 0.2s ease-out;
+}
+.hero-tip kbd {
+  color: var(--text-muted);
+  font: inherit;
+}
+.hero-drawer-btn:hover .hero-tip,
+.hero-drawer-btn:focus-visible .hero-tip {
+  opacity: 1;
+  translate: -50% 0;
+  transition-delay: 0.15s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-burger path {
+    transition-duration: 0.01s;
+  }
+  .hero-drawer[data-anim="open"]::before,
+  .hero-drawer[data-anim="open"] .hero-drawer-btn {
+    animation: hero-fade 0.15s both;
+  }
+  .hero-drawer[data-anim="close"]::before,
+  .hero-drawer[data-anim="close"] .hero-drawer-btn {
+    animation: hero-fade 0.15s reverse both;
+  }
+}
+@keyframes hero-fade {
+  from {
+    opacity: 0;
+  }
+}
+.hero-btn:focus-visible,
+.hero-drawer-btn:focus-visible,
 .update-btn:focus-visible {
   outline: 0;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 55%, transparent);
@@ -350,8 +587,13 @@ body {
   opacity: 1;
   cursor: progress;
 }
+/* Offline: no network on this machine, so a refresh can't help; the scheduled checks carry on. */
+.status-orb:disabled:not(.status-orb-busy) {
+  cursor: default;
+}
 
-.orb-icon {
+.orb-icon,
+.orb-refresh-icon {
   width: 56px;
   height: 56px;
   fill: none;
@@ -360,6 +602,12 @@ body {
   stroke-linecap: round;
   stroke-linejoin: round;
   overflow: visible;
+}
+/* A touch see-through, so the orb's color shows through like the rings' softer outer rings. */
+.orb-refresh-icon {
+  opacity: 0.85;
+}
+.orb-icon {
   transition:
     transform 0.22s ease,
     opacity 0.18s ease;
@@ -379,7 +627,7 @@ body {
 .orb-icon .rg:nth-child(4) {
   animation-delay: 0.21s;
 }
-.orb-icon path {
+.orb-icon path:where(:not(.rg)) {
   stroke-dasharray: 1;
   stroke-dashoffset: 0;
   animation: orb-draw 0.45s cubic-bezier(0.6, 0, 0.2, 1) both;
@@ -427,19 +675,19 @@ body {
 .orb-icon-rings[data-mood="alarm"] .rg:nth-child(3) {
   animation-delay: 0.14s, 1.06s;
 }
-/* Offline: the rings slowly sink back, and the slash fades a little in and out. */
-.orb-icon-rings[data-mood="offline"] .rg {
+/* Offline (Wi-Fi off, every style): the arcs slowly sink back, and the slash fades a little in and out. */
+.orb-icon[data-mood="offline"] .rg {
   animation:
     orb-rg 0.55s cubic-bezier(0.3, 1.4, 0.5, 1) both,
     orb-sink 4s ease-in-out 0.9s infinite;
 }
-.orb-icon-rings[data-mood="offline"] .rg:nth-child(2) {
+.orb-icon[data-mood="offline"] .rg:nth-child(2) {
   animation-delay: 0.07s, 1.15s;
 }
-.orb-icon-rings[data-mood="offline"] .rg:nth-child(3) {
+.orb-icon[data-mood="offline"] .rg:nth-child(3) {
   animation-delay: 0.14s, 1.4s;
 }
-.orb-icon-rings[data-mood="offline"] path {
+.orb-icon[data-mood="offline"] .orb-slash {
   animation:
     orb-draw 0.45s cubic-bezier(0.6, 0, 0.2, 1) 0.18s both,
     orb-blink 4s ease-in-out 0.9s infinite;
@@ -523,22 +771,12 @@ body {
   stroke-dasharray: none;
   animation: none;
 }
-/* Alarm / offline: a dead line. The dashes crawl in alarm and hold still when offline. */
+/* Alarm: a dead line whose dashes crawl. */
 .orb-icon-pulse .pulse-flat {
   stroke-dasharray: 2 4;
   stroke-dashoffset: 0;
   opacity: 0.8;
   animation: pulse-march 1.6s linear infinite;
-}
-/* Offline: the same dashed line, drifting a little more slowly than in Alarm; its ends fade like the
- * others'. The slash blinks softly, the way the Rings one does. */
-.orb-icon-pulse[data-mood="offline"] .pulse-flat {
-  animation-duration: 2s;
-}
-.orb-icon-pulse[data-mood="offline"] .pulse-slash {
-  animation:
-    orb-draw 0.45s cubic-bezier(0.6, 0, 0.2, 1) 0.18s both,
-    orb-blink 4s ease-in-out 0.9s infinite;
 }
 .orb-icon-pulse .pulse-x {
   transform-box: fill-box;
@@ -549,22 +787,24 @@ body {
 }
 /* Alarm: one 20 s story on a loop. A heartbeat runs for about two seconds, stutters, shrinks and is wiped
  * away from the right; the dead dashed line then crawls with the X for about 17 s (so the moving line is
- * on show for well over 15 s) before it fades and the story starts again. With reduced motion the
- * animations are off, so only the dead line and the X stay. */
+ * on show for well over 15 s) before it fades and the story starts again. The story is entered 2.5 s in
+ * (the negative delays), so arriving in Alarm shows the dead line at once, not a calm-looking beat; the
+ * heartbeat replays near the end of each loop. With reduced motion the animations are off, so only the
+ * dead line and the X stay. */
 .orb-icon-pulse .pulse-beat {
   opacity: 0;
   stroke-dasharray: 1; /* pathLength is 1: the dash offset below wipes it away from the right */
   transform-box: view-box;
   transform-origin: 12px 12px;
-  animation: orb-drain-beat 20s ease-in-out infinite;
+  animation: orb-drain-beat 20s ease-in-out -2.5s infinite;
 }
 .orb-icon-pulse[data-mood="alarm"] .pulse-flat {
   animation:
     pulse-march 1.6s linear infinite,
-    orb-drain-flat 20s ease-in-out infinite;
+    orb-drain-flat 20s ease-in-out -2.5s infinite;
 }
 .orb-icon-pulse[data-mood="alarm"] .pulse-x {
-  animation: orb-drain-x 20s ease-in-out infinite;
+  animation: orb-drain-x 20s ease-in-out -2.5s infinite;
 }
 @keyframes orb-drain-beat {
   0% {
@@ -686,7 +926,7 @@ body {
   transition-duration: 0.12s;
 }
 
-/* Busy: gray orb, rings pulse in a wave, ripples keep going. */
+/* Busy: yellow orb, rings pulse in a wave, ripples keep going. */
 .status-orb-busy::after {
   animation: orb-ripple 1.9s ease-out infinite;
 }
@@ -1008,56 +1248,30 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px var(--sp-3) var(--sp-3);
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
+  padding: 20px var(--gutter) var(--sp-3);
+  /* Masonry: --cols stacks side by side, each list dealt to the shortest one (toColumns). */
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+  align-content: start;
+  align-items: start;
+  gap: var(--list-gap, 7px);
   transition: filter 0.5s;
   /* The top edge under the hero: an eased (smoothstep) fade, no blur layer — a blur always left a seam. */
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.03) 3px, rgba(0, 0, 0, 0.1) 6px, rgba(0, 0, 0, 0.22) 8px, rgba(0, 0, 0, 0.4) 10px, rgba(0, 0, 0, 0.6) 12px, rgba(0, 0, 0, 0.78) 14px, rgba(0, 0, 0, 0.9) 16px, rgba(0, 0, 0, 0.97) 18px, #000 20px);
   mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.03) 3px, rgba(0, 0, 0, 0.1) 6px, rgba(0, 0, 0, 0.22) 8px, rgba(0, 0, 0, 0.4) 10px, rgba(0, 0, 0, 0.6) 12px, rgba(0, 0, 0, 0.78) 14px, rgba(0, 0, 0, 0.9) 16px, rgba(0, 0, 0, 0.97) 18px, #000 20px);
 }
+.lists-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--list-gap, 7px);
+  min-width: 0;
+}
+.lists > :not(.list, .lists-col) {
+  grid-column: 1 / -1; /* Add list / Edit order and the empty-state line span every column */
+}
 /* Cut off: everything below the hero is stale — mute it. */
 .app.cut-off .lists {
   filter: saturate(0.5) brightness(0.92);
-}
-
-/* Add list / Edit order, under the last list. */
-.list-actions {
-  display: flex;
-  gap: 8px;
-}
-.list-action-btn {
-  flex: 1;
-  line-height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 11px 12px;
-  /* Raised like the other buttons, but with its dashed outline kept. */
-  border: 1px dashed light-dark(rgba(30, 28, 60, 0.28), rgba(255, 255, 255, 0.2));
-  border-radius: var(--r-lg);
-  background: var(--btn-bg);
-  box-shadow: var(--btn-shadow);
-  color: var(--text-strong);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    filter 0.15s,
-    transform 0.12s;
-}
-.list-action-btn:hover {
-  filter: brightness(1.12);
-}
-.list-action-btn:active {
-  transform: scale(0.98);
-}
-.list-action-btn:focus-visible {
-  outline: 0;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 55%, transparent);
 }
 
 .loading {
@@ -1085,6 +1299,13 @@ body {
   border-radius: 18px;
   box-shadow: var(--card-shadow);
   overflow: visible;
+  /* The header's narrow layout follows the card's width, not the window's (cards share a row). */
+  container: list / inline-size;
+}
+/* The container makes each card its own stacking layer: lift the one with an open menu over
+   the cards after it. */
+.list:has(.list-dropdown) {
+  z-index: 1;
 }
 .list-head {
   display: flex;
@@ -1093,7 +1314,7 @@ body {
   padding: 8px 10px;
 }
 
-/* Name chip: one fixed gray frame, same for every list whatever its status. */
+/* Name chip: a gray frame; a fully down list tints it (ADR-0040). */
 .list-name {
   display: flex;
   flex: 0 1 auto;
@@ -1178,80 +1399,79 @@ body {
   line-height: 18px;
 }
 
-/* Critical badge: sits before the count; turns solid red and pulses while the list is down. */
-.crit-pill {
-  position: relative;
-  margin-left: 2px; /* with the 6px gap: 8px from the name chip, same as the other header gaps */
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+/* Critical mark inside the name chip: green while the list is healthy ("watched, and OK"). */
+.list-name-crit {
+  display: grid;
+  place-items: center;
   flex: none;
-  height: 22px;
-  padding: 0 10px 0 7px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 650;
-  letter-spacing: 0.1px;
-  line-height: 1;
-  white-space: nowrap;
+  margin-right: -3px; /* the chip's 13px right padding reads too wide next to an icon */
+  color: var(--state-up);
+}
+.list-name-crit svg {
+  fill: color-mix(in srgb, currentColor 22%, transparent);
+}
+
+/* Any list fully down: the chip takes a soft red tint and a thin ring that breathes slowly — low
+ * priority, so no fill and no glow. Doubled classes so these also beat .list-name:hover. */
+.list-name.list-name-down {
+  position: relative;
   color: var(--down-ink);
-  /* Same gradient, ring and soft glow as the Blocked / Down badge. */
   background: linear-gradient(
     180deg,
-    light-dark(rgba(255, 255, 255, 0.85), color-mix(in srgb, var(--state-down) 22%, transparent)),
-    light-dark(color-mix(in srgb, var(--state-down) 14%, rgba(255, 255, 255, 0.7)), color-mix(in srgb, var(--state-down) 11%, transparent))
+    light-dark(rgba(255, 255, 255, 0.85), color-mix(in srgb, var(--state-down) 18%, transparent)),
+    light-dark(color-mix(in srgb, var(--state-down) 10%, rgba(255, 255, 255, 0.7)), color-mix(in srgb, var(--state-down) 9%, transparent))
   );
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--state-down) 42%, transparent),
-    inset 0 1px 0 light-dark(transparent, rgba(255, 255, 255, 0.08)),
-    0 2px 10px -4px color-mix(in srgb, var(--state-down) 60%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--state-down) 40%, transparent),
+    inset 0 1px 0 light-dark(transparent, rgba(255, 255, 255, 0.06));
 }
-.crit-pill svg {
-  flex: none;
+.list-name-down::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 15px; /* the chip's 12px + the 3px it sits out */
+  pointer-events: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--state-down) 40%, transparent);
+  animation: pulse-ring 3s ease-in-out infinite;
 }
-/* Whole-pixel box (14px tall, 14px line) so the label centers the same in every engine —
- * fractional line boxes round differently in WebKit and Blink. */
-.crit-pill-text {
-  height: 14px;
-  line-height: 14px;
-}
-.crit-pill-down {
+/* A Critical list fully down: the chip turns solid red and pulses, shield and all. */
+.list-name.list-name-down.list-name-alarm {
   color: #fff;
   background: linear-gradient(180deg, #ff6a62, #e5443c);
   box-shadow:
     0 2px 10px color-mix(in srgb, var(--state-down) 55%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
-.crit-pill-down::after {
-  content: "";
-  position: absolute;
-  inset: -3px;
-  border-radius: inherit;
-  pointer-events: none;
+.list-name-alarm::after {
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--state-down) 55%, transparent),
     0 0 14px 2px color-mix(in srgb, var(--state-down) 55%, transparent);
-  animation: pulse-ring 1.5s ease-in-out infinite;
+  animation-duration: 1.5s;
 }
-.crit-pill-down svg {
+.list-name-alarm .list-name-crit {
+  color: inherit;
+}
+.list-name-alarm .list-name-crit svg {
+  fill: none;
   transform-origin: center;
   animation: pulse-icon 1.5s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
-  .crit-pill-down::after,
-  .crit-pill-down svg {
+  .list-name-down::after,
+  .list-name-alarm .list-name-crit svg {
     animation: none !important;
   }
 }
 
 /* Services-up count, or "All unreachable" when the whole list is down. */
 .list-count {
+  position: relative; /* paints above a down chip's pulsing glow */
   flex: none;
   line-height: 18px;
   padding: 0;
-  /* Even visual gaps along the header: 6px flex gap + 2px = 8px from the Critical pill, and −4px
-     here so the text sits 8px from the + glyph (the button has ~6px of its own air inside). */
-  margin: 0 -4px 0 2px;
+  /* 6px flex gap + 2px = 8px from the name chip. On the right, 6px + the flex gap + the button's
+     6px of inner air = 18px to the next glyph, the same spacing as between the action glyphs. */
+  margin: 0 6px 0 2px;
   color: var(--text-muted);
   font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
@@ -1441,27 +1661,9 @@ body {
   }
 }
 
-/* Narrow windows (the window can shrink to 400px): Critical becomes icon-only, the
- * "All unreachable" label shortens. */
-@media (max-width: 420px) {
-  .crit-pill {
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    gap: 0;
-    border-radius: 10px;
-  }
-  .crit-pill-down::after {
-    border-radius: 13px;
-  }
-  .crit-pill svg {
-    width: 15px;
-    height: 15px;
-  }
-  .crit-pill-text {
-    display: none;
-  }
+/* Narrow cards (one column in a 400px window, or a tight two-column row): the "All unreachable"
+ * label shortens. 396px = the card in a 420px window. */
+@container list (max-width: 396px) {
   .list-count-full {
     display: none;
   }
@@ -1716,29 +1918,15 @@ body {
   white-space: nowrap;
 }
 
-/* Boxed Blocked / Down label. Fixed height with flex centering so the text sits dead centre. */
+/* Blocked / Down label: plain text like the latency note, in the state's color. */
 .row-badge {
-  display: inline-flex;
-  align-items: center;
-  box-sizing: border-box;
   flex: none;
-  height: 24px;
-  padding: 0 9px;
-  border-radius: 8px;
-  color: light-dark(color-mix(in srgb, var(--c) 62%, #000), var(--c));
-  background: linear-gradient(
-    180deg,
-    light-dark(rgba(255, 255, 255, 0.85), color-mix(in srgb, var(--c) 22%, transparent)),
-    light-dark(color-mix(in srgb, var(--c) 14%, rgba(255, 255, 255, 0.7)), color-mix(in srgb, var(--c) 11%, transparent))
-  );
-  border: 1px solid color-mix(in srgb, var(--c) 42%, transparent);
-  box-shadow:
-    inset 0 1px 0 light-dark(transparent, rgba(255, 255, 255, 0.08)),
-    0 2px 10px -4px color-mix(in srgb, var(--c) 60%, transparent);
-  font-size: 11.5px;
-  font-weight: 650;
-  line-height: 14px; /* whole-pixel line box: same centering in WebKit and Blink */
+  font-size: var(--text-xs);
   white-space: nowrap;
+}
+.row-badge,
+.row-latency[data-state="reachable"] /* "TCP only" */ {
+  color: light-dark(color-mix(in srgb, var(--c) 62%, #000), var(--c));
 }
 
 /* Multi-endpoint summary: "7 ● · 4 ●" */
@@ -2071,39 +2259,7 @@ body {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 55%, transparent);
 }
 .modal-switch {
-  position: relative;
   flex: none;
-  width: 42px;
-  height: 25px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-strong) 16%, transparent);
-  box-shadow:
-    inset 0 1px 2px light-dark(rgba(30, 28, 60, 0.14), rgba(0, 0, 0, 0.28)),
-    inset 0 0 0 1px light-dark(rgba(30, 28, 60, 0.08), rgba(255, 255, 255, 0.085));
-  transition: background 0.2s;
-}
-.modal-switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 21px;
-  height: 21px;
-  border-radius: 50%;
-  background: linear-gradient(180deg, #fff, #eeeef2);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.35),
-    0 0 0 0.5px rgba(0, 0, 0, 0.08);
-  transition: left 0.2s;
-}
-.modal-critical[aria-checked="true"] .modal-switch {
-  background: linear-gradient(180deg, #46e4a0, #1fb975);
-  box-shadow:
-    inset 0 1px 2px rgba(0, 60, 30, 0.25),
-    0 0 14px -3px color-mix(in srgb, var(--state-up) 75%, transparent);
-}
-.modal-critical[aria-checked="true"] .modal-switch::after {
-  left: 19px;
 }
 .modal-actions {
   display: flex;
@@ -2297,100 +2453,80 @@ body {
   margin-bottom: 14px;
 }
 
-/* Status icon picker (Settings → Appearance): two live samples, one selected. */
-.orb-style {
+/* Status icon picker (Settings → Appearance): two compact segmented rows — the icon (orb and
+   menu bar), then the menu bar's outline or filled look of it. */
+.icon-pick {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  margin-top: 10px;
 }
-/* Inside the System card the picker follows toggle rows; give it room. */
-.orb-style-system {
-  margin-top: 12px;
-}
-/* Menu bar icon picker: four cards, each a strip of the icon in every state. */
-.tray-options {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.tray-opt {
-  min-width: 0;
-}
-.tray-strip {
+.icon-pick-row {
   display: flex;
-  gap: 5px;
-  padding: 6px 7px;
-  border-radius: 10px;
-  /* A menu-bar-like backdrop, so the bare icons read as they will on the real bar. */
-  background: linear-gradient(180deg, light-dark(#e4e4ea, #1f1f24), light-dark(#efeff3, #2a2a30));
-  box-shadow:
-    inset 0 1px 2px light-dark(rgba(30, 28, 60, 0.12), rgba(0, 0, 0, 0.5)),
-    inset 0 0 0 1px light-dark(transparent, rgba(255, 255, 255, 0.05));
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
-.tray-strip > span {
-  display: block;
-  line-height: 0;
-}
-.orb-style-label {
+.icon-pick-label {
   font-size: 13px;
   color: var(--text-strong);
 }
-.orb-style-options {
+.seg {
   display: flex;
-  gap: 8px;
+  width: 200px;
+  flex-shrink: 0;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 12px;
+  background: light-dark(rgba(30, 28, 60, 0.06), rgba(0, 0, 0, 0.28));
+  box-shadow: inset 0 1px 2px light-dark(rgba(30, 28, 60, 0.1), rgba(0, 0, 0, 0.45));
 }
-.orb-style-opt {
+.seg-opt {
   flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 10px 8px 8px;
-  border: 1px solid light-dark(rgba(30, 28, 60, 0.1), rgba(255, 255, 255, 0.085));
-  border-radius: 14px;
-  background: linear-gradient(
-    180deg,
-    light-dark(#fff, rgba(255, 255, 255, 0.09)),
-    light-dark(rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.035))
-  );
-  box-shadow:
-    inset 0 1px 0 light-dark(#fff, rgba(255, 255, 255, 0.07)),
-    0 1px 2px light-dark(rgba(30, 28, 60, 0.06), transparent);
-  color: var(--text-strong);
+  min-width: 0;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted);
   font: inherit;
   font-size: 12.5px;
   cursor: pointer;
   transition:
+    background 0.2s,
     box-shadow 0.2s,
-    transform 0.2s,
-    background 0.2s;
+    color 0.2s;
 }
-.orb-style-opt:hover {
-  transform: translateY(-1px);
+.seg-opt:hover {
+  color: var(--text-strong);
 }
-/* The chosen one: a brand ring and a soft glow. */
-.orb-style-opt[aria-checked="true"] {
-  background: linear-gradient(
-    180deg,
-    light-dark(#fffdf2, rgba(255, 255, 255, 0.14)),
-    light-dark(#fff6d6, rgba(255, 255, 255, 0.06))
-  );
+/* The chosen one: raised, with a brand ring. */
+.seg-opt[aria-checked="true"] {
+  background: light-dark(#fff, rgba(255, 255, 255, 0.12));
   box-shadow:
-    0 0 0 2px var(--brand),
-    0 8px 22px -10px color-mix(in srgb, var(--brand) 80%, transparent),
-    inset 0 1px 0 light-dark(transparent, rgba(255, 255, 255, 0.1));
+    0 0 0 1.5px var(--brand),
+    0 1px 3px light-dark(rgba(30, 28, 60, 0.12), rgba(0, 0, 0, 0.4));
+  color: var(--text-strong);
   font-weight: 650;
 }
-.orb-style-opt:focus-visible {
+.seg-opt:focus-visible {
   outline: 0;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 55%, transparent);
 }
+.seg-opt .tray-icon {
+  flex-shrink: 0;
+}
 .orb-thumb {
-  --sev: var(--state-up);
+  --sev: var(--mood-ok);
   display: grid;
+  flex-shrink: 0;
   place-items: center;
-  width: 46px;
-  height: 46px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   color: #fff;
   background:
@@ -2403,12 +2539,11 @@ body {
     );
   box-shadow:
     inset 0 1px 1px rgba(255, 255, 255, 0.35),
-    inset 0 -3px 6px color-mix(in srgb, var(--sev) 75%, #000 25%),
-    0 0 0 4px color-mix(in srgb, var(--sev) 20%, transparent);
+    inset 0 -2px 3px color-mix(in srgb, var(--sev) 75%, #000 25%);
 }
 .orb-thumb .orb-icon {
-  width: 30px;
-  height: 30px;
+  width: 15px;
+  height: 15px;
 }
 .config-actions {
   display: flex;
@@ -2526,43 +2661,45 @@ body {
   width: 0;
   height: 0;
 }
-.switch-track {
+/* One switch, three hosts: Switch, the List dialog's Critical switch, the alert table. The v0.6.5
+   switch as it was: 36×20, a white 16px knob, flat gold when on (ADR-0046). */
+.switch-track,
+.modal-switch,
+.alert-grid input[type="checkbox"] {
   position: relative;
-  width: 42px;
-  height: 25px;
+  width: 36px;
+  height: 20px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--text-strong) 16%, transparent);
-  box-shadow:
-    inset 0 1px 2px light-dark(rgba(30, 28, 60, 0.14), rgba(0, 0, 0, 0.28)),
-    inset 0 0 0 1px light-dark(rgba(30, 28, 60, 0.08), rgba(255, 255, 255, 0.085));
-  transition: background 0.2s ease;
+  background: var(--border);
+  transition: background 0.15s ease;
 }
-.switch-track::after {
+.switch-track::after,
+.modal-switch::after,
+.alert-grid input[type="checkbox"]::after {
   content: "";
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 21px;
-  height: 21px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  background: linear-gradient(180deg, #fff, #eeeef2);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.35),
-    0 0 0 0.5px rgba(0, 0, 0, 0.08);
-  transition: transform 0.2s ease;
+  background: #fff;
+  transition: transform 0.15s ease;
 }
-.switch input:checked + .switch-track {
-  background: linear-gradient(180deg, #46e4a0, #1fb975);
-  box-shadow:
-    inset 0 1px 2px rgba(0, 60, 30, 0.25),
-    0 0 14px -3px color-mix(in srgb, var(--state-up) 75%, transparent);
+.switch input:checked + .switch-track,
+.modal-critical[aria-checked="true"] .modal-switch,
+.alert-grid input[type="checkbox"]:checked {
+  background: var(--switch-on);
 }
-.switch input:checked + .switch-track::after {
-  transform: translateX(17px);
+.switch input:checked + .switch-track::after,
+.modal-critical[aria-checked="true"] .modal-switch::after,
+.alert-grid input[type="checkbox"]:checked::after {
+  transform: translateX(16px);
 }
-.switch input:focus-visible + .switch-track {
-  outline: 0;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 55%, transparent);
+.switch input:focus-visible + .switch-track,
+.alert-grid input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--switch-on);
+  outline-offset: 2px;
 }
 
 .alert-grid {
@@ -2575,49 +2712,13 @@ body {
   margin: 2px 0 0;
 }
 
-/* The alert checkboxes are drawn as switches (same look as the others). */
+/* The alert checkboxes are drawn as switches (the shared switch rules above). */
 .alert-grid input[type="checkbox"] {
   appearance: none;
   -webkit-appearance: none;
-  position: relative;
-  width: 42px;
-  height: 25px;
   margin: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-strong) 16%, transparent);
-  box-shadow:
-    inset 0 1px 2px light-dark(rgba(30, 28, 60, 0.14), rgba(0, 0, 0, 0.28)),
-    inset 0 0 0 1px light-dark(rgba(30, 28, 60, 0.08), rgba(255, 255, 255, 0.085));
   cursor: pointer;
   justify-self: center;
-  transition: background 0.2s ease;
-}
-.alert-grid input[type="checkbox"]::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 21px;
-  height: 21px;
-  border-radius: 50%;
-  background: linear-gradient(180deg, #fff, #eeeef2);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.35),
-    0 0 0 0.5px rgba(0, 0, 0, 0.08);
-  transition: transform 0.2s ease;
-}
-.alert-grid input[type="checkbox"]:checked {
-  background: linear-gradient(180deg, #46e4a0, #1fb975);
-  box-shadow:
-    inset 0 1px 2px rgba(0, 60, 30, 0.25),
-    0 0 14px -3px color-mix(in srgb, var(--state-up) 75%, transparent);
-}
-.alert-grid input[type="checkbox"]:checked::after {
-  transform: translateX(17px);
-}
-.alert-grid input[type="checkbox"]:focus-visible {
-  outline: 0;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 55%, transparent);
 }
 
 /* Keep the column headers centered over their checkbox column. */
@@ -2907,7 +3008,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 20px var(--sp-3) 0;
+  margin: 20px var(--gutter) 0;
   padding: 9px 8px 9px 12px;
   border-radius: 14px;
   font-size: 13px;

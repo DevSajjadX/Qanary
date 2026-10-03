@@ -75,6 +75,7 @@ export function ServiceList({
 } & Partial<GripProps>) {
   // "All unreachable" replaces the services-up count when the whole list is down.
   const allDown = list.all_down && list.services.length > 0;
+  const critDown = list.critical && allDown;
   const upCount = list.services.filter((s) => s.state !== "down").length;
   const [menuOpen, setMenuOpen] = useState(false);
   // Read from the snapshot, never copied into local state: a remount (entering/leaving reorder
@@ -187,9 +188,9 @@ export function ServiceList({
             <Icon name="grip" size={14} />
           </button>
         )}
-        {/* One fixed gray frame for every list — it never changes with status. */}
+        {/* One gray frame for every list. Fully down it tints red; a Critical list's turns solid and pulses. */}
         <span
-          className={`list-name${reorderMode ? "" : " list-name-check"}`}
+          className={`list-name${reorderMode ? "" : " list-name-check"}${allDown ? " list-name-down" : ""}${critDown ? " list-name-alarm" : ""}`}
           onMouseEnter={nameScroll.onMouseEnter}
           onMouseLeave={nameScroll.onMouseLeave}
           // The whole chip is the target; the button inside is what keyboard users reach (its
@@ -218,16 +219,18 @@ export function ServiceList({
               </button>
             )}
           </h2>
+          {/* Critical is a setting, not a problem: a green mark in the chip until the list is down. */}
+          {list.critical && (
+            <span
+              className="list-name-crit"
+              role="img"
+              aria-label={critDown ? "Critical list is down" : "Critical list"}
+              title={critDown ? "Critical list is down" : "Critical list"}
+            >
+              <Icon name={critDown ? "shield" : "shieldPlain"} size={13} />
+            </span>
+          )}
         </span>
-        {list.critical && (
-          <span
-            className={`crit-pill${allDown ? " crit-pill-down" : ""}`}
-            title={allDown ? "Critical list is down" : "Critical list"}
-          >
-            <Icon name="shield" size={13} />
-            <span className="crit-pill-text">Critical</span>
-          </span>
-        )}
         {allDown ? (
           <small className="list-count list-count-down" title="Every service in this list is unreachable">
             <span className="list-count-full">All unreachable</span>
@@ -286,16 +289,14 @@ export function ServiceList({
             )}
           </div>
         )}
-        {!reorderMode && (
-          <button
-            className="list-menu-btn list-chevron-btn"
-            onClick={handleToggleCollapse}
-            title={collapsed ? "Expand" : "Collapse"}
-            aria-expanded={!collapsed}
-          >
-            <Icon name="chevronDown" size={16} strokeWidth={2.7} />
-          </button>
-        )}
+        <button
+          className="list-menu-btn list-chevron-btn"
+          onClick={handleToggleCollapse}
+          title={collapsed ? "Expand" : "Collapse"}
+          aria-expanded={!collapsed}
+        >
+          <Icon name="chevronDown" size={16} strokeWidth={2.7} />
+        </button>
       </div>
 
       {bodyMounted && (

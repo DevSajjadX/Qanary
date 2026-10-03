@@ -22,7 +22,7 @@ const STATE_TITLE: Record<ServiceState, string> = {
   checking: "Checking…",
 };
 
-/** Boxed label for the two states worth shouting about. Up/Reachable/Checking stay quiet. */
+/** Colored label for the two failure states. Up/Reachable/Checking show latency or a note instead. */
 const BADGE_LABEL: Partial<Record<ServiceState, string>> = {
   blocked: "Blocked",
   down: "Down",
@@ -223,7 +223,12 @@ export function ServiceRow({
           ~{groupSpeed.mean} ms
         </span>
       ) : (
-        !multiEndpoint && singleLatency && <span className="row-latency">{singleLatency}</span>
+        !multiEndpoint &&
+        singleLatency && (
+          <span className="row-latency" data-state={primaryEndpoint?.state}>
+            {singleLatency}
+          </span>
+        )
       )}
       {badge && (
         <span className="row-badge" data-state={status.state}>
@@ -313,7 +318,7 @@ export function ServiceRow({
                     {ep.state === "checking" ? (
                       <Pinging />
                     ) : (
-                      <span className="row-latency">{epLatency || (ep.state === "down" ? "—" : "")}</span>
+                      <span className="row-latency" data-state={ep.state}>{epLatency || (ep.state === "down" ? "—" : "")}</span>
                     )}
                   </li>
                 );

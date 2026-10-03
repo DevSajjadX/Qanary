@@ -84,7 +84,8 @@ export type SettingsPatch = Partial<
     | "blocked_sound"
     | "notify_volume"
     | "hide_dock"
-    | "tray_style"
+    | "status_icon"
+    | "tray_filled"
   >
 >;
 
@@ -117,6 +118,13 @@ export const getChangelog = () =>
 /** Subscribe to live snapshot pushes. Returns a promise of the unlisten fn. */
 export const onStatusUpdate = (cb: (s: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>("status-update", (event) => cb(event.payload));
+
+/** What the native app menu asks for (`app_menu.rs`). */
+export type MenuAction = "settings" | "add-list" | "edit-order";
+
+/** Subscribe to native app-menu clicks. Returns a promise of the unlisten fn. */
+export const onMenuAction = (cb: (a: MenuAction) => void): Promise<UnlistenFn> =>
+  listen<MenuAction>("menu-action", (event) => cb(event.payload));
 
 /** Subscribe to per-Service Status deltas. Returns a promise of the unlisten fn. */
 export const onServiceUpdate = (cb: (d: ServiceDelta) => void): Promise<UnlistenFn> =>

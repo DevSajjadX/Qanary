@@ -5,7 +5,7 @@ import {
   save as saveDialog,
   open as openDialog,
 } from "@tauri-apps/plugin-dialog";
-import type { Config, TrayStyle } from "../types";
+import type { Config, StatusIcon } from "../types";
 import { parseHost } from "../utils/parseHost";
 import type { UpdatePhase } from "../App";
 import { exportConfig, type SettingsPatch } from "../api";
@@ -27,8 +27,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Icon } from "./Icon";
 import { useTheme, type ThemeMode } from "../theme";
-import { useOrbStyle, type OrbStyle } from "../orbStyle";
-import { TrayIcon, TRAY_MOODS, TRAY_STYLES } from "./trayIcons";
+import { TrayIcon } from "./trayIcons";
 import { OrbThumb, ORB_STYLE_LABEL } from "./orbIcons";
 
 const THEME_ICON: Record<ThemeMode, "sun" | "moon" | "monitor"> = {
@@ -176,7 +175,8 @@ export function Settings({
   const [loginInitial, setLoginInitial] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [hideDock, setHideDockState] = useState(false);
-  const [trayStyle, setTrayStyle] = useState<TrayStyle>("rings");
+  const [statusIcon, setStatusIcon] = useState<StatusIcon>("rings");
+  const [trayFilled, setTrayFilled] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [configMsg, setConfigMsg] = useState<{
@@ -188,7 +188,7 @@ export function Settings({
   const isMac = navigator.userAgent.includes("Mac");
   // Theme + "Reset to defaults" used to live in the hero menu; they moved here unchanged.
   const [theme, cycleTheme] = useTheme();
-  const [orbStyle, setOrbStyle] = useOrbStyle();
+  const uid = useId();
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
 
@@ -213,7 +213,8 @@ export function Settings({
     setBlockedSound(config.blocked_sound);
     setVolume(config.notify_volume);
     setHideDockState(config.hide_dock);
-    setTrayStyle(config.tray_style);
+    setStatusIcon(config.status_icon);
+    setTrayFilled(config.tray_filled);
     setSaveError(null);
     setLoginError(null);
     setConfirmReset(false);
@@ -281,7 +282,8 @@ export function Settings({
         blocked_sound: blockedSound,
         notify_volume: volume,
         hide_dock: hideDock,
-        tray_style: trayStyle,
+        status_icon: statusIcon,
+        tray_filled: trayFilled,
       });
       onClose();
     } catch (err) {
@@ -317,7 +319,8 @@ export function Settings({
         >
           <h3 className="modal-title">Settings</h3>
 
-          {/* Appearance — standalone, applies immediately (theme is a per-device preference). */}
+          {/* Appearance. Theme is per device and applies at once; the status icon is drawn by the
+              backend too (menu bar), so it is config and waits for Save like the cards below. */}
           <SettingsCard className="appearance-card" title="Appearance">
             <button
               type="button"
@@ -328,23 +331,42 @@ export function Settings({
               <Icon name={THEME_ICON[theme]} size={14} />
               <span>Theme: {THEME_LABEL[theme]}</span>
             </button>
-            {/* Status icon style — how the hero orb draws the mood. Applies immediately. */}
-            <div className="orb-style" role="radiogroup" aria-label="Status icon">
-              <span className="orb-style-label">Status icon</span>
-              <div className="orb-style-options">
-                {(["rings", "pulse"] as OrbStyle[]).map((style) => (
-                  <button
-                    key={style}
-                    type="button"
-                    role="radio"
-                    aria-checked={orbStyle === style}
-                    className="orb-style-opt"
-                    onClick={() => setOrbStyle(style)}
-                  >
-                    <OrbThumb style={style} />
-                    <span>{ORB_STYLE_LABEL[style]}</span>
-                  </button>
-                ))}
+            <div className="icon-pick">
+              <div className="icon-pick-row">
+                <span className="icon-pick-label" id={`${uid}-icon`}>Status icon</span>
+                <div className="seg" role="radiogroup" aria-labelledby={`${uid}-icon`}>
+                  {(["rings", "pulse"] as StatusIcon[]).map((icon) => (
+                    <button
+                      key={icon}
+                      type="button"
+                      role="radio"
+                      aria-checked={statusIcon === icon}
+                      className="seg-opt"
+                      onClick={() => setStatusIcon(icon)}
+                    >
+                      <OrbThumb style={icon} />
+                      <span>{ORB_STYLE_LABEL[icon]}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="icon-pick-row">
+                <span className="icon-pick-label" id={`${uid}-tray`}>Menu bar</span>
+                <div className="seg" role="radiogroup" aria-labelledby={`${uid}-tray`}>
+                  {[false, true].map((filled) => (
+                    <button
+                      key={String(filled)}
+                      type="button"
+                      role="radio"
+                      aria-checked={trayFilled === filled}
+                      className="seg-opt"
+                      onClick={() => setTrayFilled(filled)}
+                    >
+                      <TrayIcon icon={statusIcon} filled={filled} mood="ok" size={16} />
+                      <span>{filled ? "Filled" : "Outline"}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </SettingsCard>
@@ -616,33 +638,6 @@ export function Settings({
                   </div>
                 </>
               )}
-
-              {/* Menu-bar icon look — four looks, each shown in every state it can take. Part of
-                  Save: the backend draws the icon, so it is a config setting, not a per-device one. */}
-              <div className="orb-style orb-style-system" role="radiogroup" aria-label="Menu bar icon">
-                <span className="orb-style-label">Menu bar icon</span>
-                <div className="tray-options">
-                  {TRAY_STYLES.map(({ style, label }) => (
-                    <button
-                      key={style}
-                      type="button"
-                      role="radio"
-                      aria-checked={trayStyle === style}
-                      className="orb-style-opt tray-opt"
-                      onClick={() => setTrayStyle(style)}
-                    >
-                      <span className="tray-strip" aria-hidden="true">
-                        {TRAY_MOODS.map(({ mood, title }) => (
-                          <span key={mood} title={title}>
-                            <TrayIcon style={style} mood={mood} />
-                          </span>
-                        ))}
-                      </span>
-                      <span>{label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
             </SettingsCard>
 
             {saveError && <p className="modal-error" role="alert">{saveError}</p>}

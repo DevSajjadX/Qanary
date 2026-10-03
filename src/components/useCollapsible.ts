@@ -3,6 +3,10 @@ import { useEffect, useRef, useState } from "react";
 /** How long a collapse/expand animates. Keep in sync with `--collapse-ms` in App.css. */
 export const COLLAPSE_MS = 300;
 
+/** How long the hero ☰ drawer stays mounted to animate: its longest animation, the last
+ *  action's staggered entrance (`.hero-drawer` in App.css). e2e 13 checks it covers them all. */
+export const DRAWER_MS = 440;
+
 /**
  * Keeps a collapsible body mounted while it animates, then unmounts it.
  *
@@ -11,7 +15,10 @@ export const COLLAPSE_MS = 300;
  * transition and "none" otherwise, and `mounted` is false once a closed body is gone
  * (a closed list renders no rows at all).
  */
-export function useCollapsible(open: boolean): {
+export function useCollapsible(
+  open: boolean,
+  ms = COLLAPSE_MS,
+): {
   mounted: boolean;
   anim: "none" | "open" | "close";
 } {
@@ -27,9 +34,9 @@ export function useCollapsible(open: boolean): {
     const t = setTimeout(() => {
       setAnim("none");
       if (!open) setMounted(false);
-    }, COLLAPSE_MS + 20);
+    }, ms + 20);
     return () => clearTimeout(t);
-  }, [open]);
+  }, [open, ms]);
 
   return { mounted, anim };
 }

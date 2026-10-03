@@ -91,7 +91,7 @@ const ICONS: Record<string, JSX.Element> = {
       <path d="M5.5 13.5 12 20l6.5-6.5" />
     </>
   ),
-  // restart (update ready; also the orb's hover refresh arrow)
+  // restart (update ready)
   restart: (
     <>
       <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
@@ -102,7 +102,11 @@ const ICONS: Record<string, JSX.Element> = {
   order: <path d="m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16" />,
   // trash (delete list)
   trash: <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6" />,
-  // shield with "!" (Critical list badge)
+  // shield, plain (calm Critical marker in the list name chip)
+  shieldPlain: (
+    <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+  ),
+  // shield with "!" (in the name chip of a Critical list that is down)
   shield: (
     <>
       <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />

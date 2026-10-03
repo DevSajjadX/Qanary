@@ -1,10 +1,9 @@
 import React, { useEffect, useRef } from "react";
-import type { Severity, Snapshot } from "../types";
+import type { Severity, Snapshot, StatusIcon } from "../types";
 import type { UpdatePhase } from "../App";
 import { Canary } from "./Canary";
 import { Icon } from "./Icon";
-import { OrbIcon, type Mood } from "./orbIcons";
-import { useOrbStyle } from "../orbStyle";
+import { OrbIcon, OrbRefresh, type Mood } from "./orbIcons";
 
 // Calm vs urgent microcopy, keyed by Severity. One place so tone stays
 // consistent (and is easy to localize later).
@@ -50,7 +49,7 @@ function moodOf(
   busy: boolean,
   cutOff: boolean,
 ): Mood {
-  if (busy) return "busy"; // refreshing: gray, rings pulse
+  if (busy) return "busy"; // refreshing: rings pulse
   const services = snapshot?.lists.flatMap((l) => l.services) ?? [];
   if (services.length === 0) return "idle"; // nothing to watch
   if (cutOff) return "offline";
@@ -59,13 +58,15 @@ function moodOf(
 
 /** The status orb — status badge + refresh button in one.
  *  The mood is drawn in the user's chosen style (Rings or Pulse); hover swaps it for a
- *  refresh arrow. Busy: gray, the icon pulses and ripples go outward. */
+ *  refresh arrow. Busy: the icon pulses and ripples go outward. Offline: Wi-Fi off, no refresh. */
 function StatusOrb({
+  icon,
   mood,
   busy,
   heroRef,
   onClick,
 }: {
+  icon: StatusIcon;
   mood: Mood;
   busy: boolean;
   heroRef: React.RefObject<HTMLElement | null>;
@@ -73,7 +74,6 @@ function StatusOrb({
 }) {
   const orbRef = useRef<HTMLButtonElement>(null);
   const first = useRef(true);
-  const [orbStyle] = useOrbStyle();
 
   // A mood change lands with a pop + ripple (+ a shake for the two alarms), and the
   // headline recoils. Classes are removed again so the next change can replay them.
@@ -106,14 +106,16 @@ function StatusOrb({
         ref={orbRef}
         className={`status-orb${busy ? " status-orb-busy" : ""}`}
         onClick={onClick}
-        disabled={busy}
+        // Offline means this machine has no network: a refresh can't fix that, and the scheduled
+        // checks pick the connection up again on their own.
+        disabled={busy || mood === "offline"}
         aria-busy={busy}
-        title="Refresh now"
+        title={mood === "offline" ? "You're offline. Qanary keeps checking on its own." : "Refresh now (⌘R)"}
         aria-label="Refresh"
       >
-        <OrbIcon key={`${orbStyle}-${mood}`} style={orbStyle} mood={mood} />
+        <OrbIcon key={`${icon}-${mood}`} style={icon} mood={mood} />
         <span className="orb-refresh" aria-hidden="true">
-          <Icon name="restart" size={32} strokeWidth={3.2} />
+          <OrbRefresh />
         </span>
       </button>
     </div>
@@ -122,16 +124,18 @@ function StatusOrb({
 
 export function StatusHero({
   snapshot,
+  icon,
   onRefresh,
-  onOpenSettings,
+  menu,
   updatePhase,
   downloadProgress,
   onDownload,
   onInstall,
 }: {
   snapshot: Snapshot | null;
+  icon: StatusIcon;
   onRefresh: () => Promise<void>;
-  onOpenSettings: () => void;
+  menu: React.ReactNode;
   updatePhase: UpdatePhase | null;
   downloadProgress: number;
   onDownload: () => void;
@@ -159,14 +163,7 @@ export function StatusHero({
           </span>
           <span className="hero-brand-name">Qanary</span>
         </div>
-        <button
-          className="hero-gear"
-          onClick={onOpenSettings}
-          title="Settings"
-          aria-label="Settings"
-        >
-          <Icon name="settings" size={18} strokeWidth={1.8} />
-        </button>
+        {menu}
       </div>
 
       <div className="hero-main">
@@ -218,7 +215,7 @@ export function StatusHero({
           </div>
         </div>
 
-        <StatusOrb mood={mood} busy={busy} heroRef={heroRef} onClick={onRefresh} />
+        <StatusOrb icon={icon} mood={mood} busy={busy} heroRef={heroRef} onClick={onRefresh} />
       </div>
     </header>
   );

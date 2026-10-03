@@ -90,11 +90,9 @@ export interface ServiceList {
   critical: boolean;
 }
 
-/**
- * The menu-bar icon's look: rings or a heartbeat, each bare or cut out of a filled rounded
- * square. (The in-app status icon has its own two-way choice, `OrbStyle`.)
- */
-export type TrayStyle = "rings" | "pulse" | "rings-filled" | "pulse-filled";
+/** The picture that carries the status: concentric rings or a heartbeat. The in-app orb and the
+ *  menu-bar icon both draw it (ADR-0044). */
+export type StatusIcon = "rings" | "pulse";
 
 export interface Config {
   schema_version: number;
@@ -117,8 +115,10 @@ export interface Config {
    */
   notify_volume: number;
   hide_dock: boolean;
-  /** Look of the menu-bar (tray) icon — drawn by the backend, so it lives in the config. */
-  tray_style: TrayStyle;
+  /** The orb's and the menu-bar icon's picture. In the config because the backend draws the tray. */
+  status_icon: StatusIcon;
+  /** Menu bar only: the icon cut out of a filled rounded square instead of drawn bare. */
+  tray_filled: boolean;
   last_changelog_version: string | null;
 }
 

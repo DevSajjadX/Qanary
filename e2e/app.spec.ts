@@ -10,11 +10,42 @@
  *   5. Settings Config card → Export / Import buttons
  *   6. List reorder survives a `service-update` delta
  *   7. A long list name shows an ellipsis, scrolls to its end on hover and eases back
- *   8. The gear, the list chevron and the row ⋮ share one centre line
+ *   8. The hero ☰, the list chevron and the row ⋮ share one centre line
+ *   8b. The list count is as far from the next icon as the icons are from each other
+ *   8c. The orb's refresh arrow uses the orb icons' frame and stroke, at 0.85 opacity
  *   9. A service being re-checked shows an animated "Pinging…", then its result
  *  10. Long names never push a row past its card: the row buttons stay inside it
+ *  11. Lists stack in a narrow window, sit side by side in a wide one, and a full-screen window
+ *      centers them at 480px each instead of stretching
+ *  12. The Pulse alarm shows its dead line on arrival, dashed and crawling, and its X beats (the orb's
+ *      draw-in must not override them)
+ *  13. The ☰ drawer grows out to the ☰'s left (the ☰ turning into a ›), names an action on hover,
+ *      and slides shut on Escape
  */
-import { test, expect } from "./fixtures";
+import { test, expect, SNAPSHOT } from "./fixtures";
+import type { Page } from "@playwright/test";
+import { LIST_MAX_PX, columnCount } from "../src/utils/listColumns";
+import { DRAWER_MS } from "../src/components/useCollapsible";
+
+// Add list, Edit order and Settings sit in the hero's ☰ drawer.
+async function heroAction(page: Page, name: RegExp) {
+  await page.getByRole("button", { name: "Menu" }).click();
+  await page.getByRole("group", { name: "App actions" }).getByRole("button", { name }).click();
+}
+
+// The column count follows the window's resize event, so wait for that re-render before measuring.
+async function setWidth(page: Page, width: number, height = 720) {
+  await page.setViewportSize({ width, height });
+  await expect
+    .poll(async () => {
+      const [cols, lists] = await page.evaluate(() => [
+        Number(getComputedStyle(document.querySelector(".app")!).getPropertyValue("--cols")),
+        document.querySelectorAll(".list").length,
+      ]);
+      return cols === columnCount(width, lists);
+    })
+    .toBe(true);
+}
 
 test("1 — initial snapshot renders green status", async ({ mockedPage: page }) => {
   // Hero should show the "all clear" headline for overall=green
@@ -42,8 +73,7 @@ test("3 — add-list modal submits add_list command", async ({
   mockedPage: page,
   getInvokedCmds,
 }) => {
-  // "Add list" sits under the lists
-  await page.getByRole("button", { name: /add list/i }).click();
+  await heroAction(page, /add list/i);
 
   // Fill in the list name modal
   const nameInput = page.getByPlaceholder(/list name/i);
@@ -61,8 +91,7 @@ test("4 — settings modal opens and update_settings is invoked", async ({
   mockedPage: page,
   getInvokedCmds,
 }) => {
-  // Gear → Settings
-  await page.getByRole("button", { name: /^settings$/i }).click();
+  await heroAction(page, /^settings$/i);
 
   // Settings panel should be visible
   await expect(page.getByRole("heading", { name: /settings/i })).toBeVisible();
@@ -78,8 +107,7 @@ test("4 — settings modal opens and update_settings is invoked", async ({
 test("5 — settings panel shows Config card with Export and Import buttons", async ({
   mockedPage: page,
 }) => {
-  // Gear → Settings
-  await page.getByRole("button", { name: /^settings$/i }).click();
+  await heroAction(page, /^settings$/i);
 
   // Config card legend and both action buttons must be present
   await expect(page.getByText("Config", { exact: true })).toBeVisible();
@@ -97,6 +125,7 @@ test("6 — a list reorder survives the next service-update", async ({
   const names = page.locator(".list-name-text");
   await expect(names).toHaveText(["Internet", "Intranet"]);
 
+  await page.getByRole("button", { name: "List options" }).first().click();
   await page.getByRole("button", { name: "Edit order" }).click();
 
   const grip = page.locator(".list-grip-btn");
@@ -170,7 +199,7 @@ test("7 — a long list name shows an ellipsis, scrolls on hover and eases back"
   mockedPage: page,
   emitEvent,
 }) => {
-  await page.setViewportSize({ width: 400, height: 560 });
+  await setWidth(page, 400, 560);
   await emitEvent("status-update", longSnapshot(LONG_LIST, "Digikala"));
   const text = page.locator(".list-name-btn").first();
   await expect(text).toContainText("Corporate intranet");
@@ -199,7 +228,7 @@ test("7 — a long list name shows an ellipsis, scrolls on hover and eases back"
   await expect(text).toHaveCSS("text-overflow", "ellipsis");
 });
 
-test("8 — the gear, the list chevron and the row menu share one centre line", async ({
+test("8 — the hero ☰, the list chevron and the row menu share one centre line", async ({
   mockedPage: page,
 }) => {
   const centreX = (sel: string) =>
@@ -208,13 +237,44 @@ test("8 — the gear, the list chevron and the row menu share one centre line", 
       return b.left + b.width / 2;
     });
   for (const width of [460, 400]) {
-    await page.setViewportSize({ width, height: 720 });
-    const gear = await centreX('button[aria-label="Settings"] svg');
+    await setWidth(page, width);
+    const gear = await centreX('button[aria-label="Menu"] svg');
     const chevron = await centreX(".list-chevron-btn svg");
     const rowMenu = await centreX(".row .list-menu-wrap .list-menu-btn svg");
     expect(Math.abs(gear - chevron), `gear vs chevron at ${width}`).toBeLessThan(0.6);
     expect(Math.abs(rowMenu - chevron), `row menu vs chevron at ${width}`).toBeLessThan(0.6);
   }
+});
+
+test("8b — the list count sits as far from the next icon as the icons sit from each other", async ({
+  mockedPage: page,
+}) => {
+  const gaps = () =>
+    page.locator(".list-head").first().evaluate((head) => {
+      const count = head.querySelector(".list-count")!.getBoundingClientRect();
+      const glyphs = [...head.querySelectorAll(".list-menu-btn svg")].map((s) => s.getBoundingClientRect());
+      return { count: glyphs[0].left - count.right, icons: glyphs.slice(1).map((g, i) => g.left - glyphs[i].right) };
+    });
+  const normal = await gaps();
+  for (const icons of normal.icons) expect(Math.abs(icons - normal.count)).toBeLessThan(0.6);
+
+  // Edit order leaves only the chevron; the count keeps the same distance to it.
+  await page.getByTitle("List options").first().click();
+  await page.getByRole("button", { name: /edit order/i }).click();
+  expect(Math.abs((await gaps()).count - normal.count)).toBeLessThan(0.6);
+});
+
+test("8c — the orb's refresh arrow is drawn in the orb icons' frame and stroke", async ({
+  mockedPage: page,
+}) => {
+  const look = (sel: string) =>
+    page.locator(sel).first().evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return [cs.width, cs.height, cs.strokeWidth, el.getAttribute("viewBox")];
+    });
+  expect(await look(".orb-refresh svg")).toEqual(await look(".status-orb .orb-icon"));
+  // …at 0.85, so it reads as part of the orb rather than a sticker on it.
+  await expect(page.locator(".orb-refresh svg")).toHaveCSS("opacity", "0.85");
 });
 
 test("9 — a service being re-checked shows Pinging… and then its result", async ({
@@ -261,7 +321,7 @@ test("10 — long names never push a row's buttons out of its card", async ({
   const right = (sel: string, i = 0) =>
     page.locator(sel).nth(i).evaluate((el) => el.getBoundingClientRect().right);
   for (const width of [460, 400]) {
-    await page.setViewportSize({ width, height: 560 });
+    await setWidth(page, width, 560);
     await emitEvent("status-update", longSnapshot(LONG_LIST, LONG_SERVICE));
     await expect(page.getByRole("button", { name: LONG_SERVICE })).toBeVisible();
     const card = await right(".list");
@@ -275,4 +335,156 @@ test("10 — long names never push a row's buttons out of its card", async ({
     // Nothing makes the page scroll sideways.
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   }
+});
+
+test("11 — lists sit side by side once the window fits two, each capped in width", async ({
+  mockedPage: page,
+}) => {
+  const box = (i: number) => page.locator(".list").nth(i).evaluate((el) => el.getBoundingClientRect());
+  const at = async (width: number) => {
+    await setWidth(page, width);
+    return [await box(0), await box(1)];
+  };
+
+  let [a, b] = await at(460);
+  expect(b.top, "stacked at 460").toBeGreaterThan(a.bottom - 1);
+
+  [a, b] = await at(1000);
+  expect(b.top, "same row at 1000").toBe(a.top);
+  expect(b.left, "second list to the right").toBeGreaterThan(a.right);
+
+  // One column short of fitting a second: the card stays at its cap, centered.
+  [a] = await at(750);
+  expect(a.width, "capped at 750").toBeLessThanOrEqual(LIST_MAX_PX);
+
+  // Full screen: the block is only as wide as two cards, centered, and the hero shares it.
+  [a, b] = await at(1900);
+  expect(a.width, "card width at 1900").toBeLessThanOrEqual(LIST_MAX_PX);
+  expect(Math.abs(a.left - (1900 - b.right)), "centered").toBeLessThanOrEqual(1);
+  const orb = await page.locator(".orb-wrap").evaluate((el) => el.getBoundingClientRect().right);
+  expect(Math.abs(orb - b.right), "hero ends where the lists end").toBeLessThanOrEqual(16);
+});
+
+test("12 — the Pulse alarm line stays dashed and crawling, its X beating", async ({
+  mockedPage: page,
+  emitEvent,
+}) => {
+  // Runs after the fixture's init script, so the reload boots the mock with the Pulse icon saved.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __MOCK__: { cfg: object } };
+    w.__MOCK__.cfg = { ...w.__MOCK__.cfg, status_icon: "pulse" };
+  });
+  await page.reload();
+  await page.waitForSelector(".status-orb .orb-icon-pulse");
+  await page.waitForSelector('[aria-label="Refresh"]:not([disabled])');
+  const down = SNAPSHOT.lists.map((l) => ({
+    ...l,
+    critical: true,
+    all_down: true,
+    services: l.services.map((s) => ({
+      ...s,
+      state: "down",
+      endpoints: s.endpoints.map((e) => ({ ...e, state: "down", latency_ms: null })),
+    })),
+  }));
+  await emitEvent("status-update", { ...SNAPSHOT, lists: down, overall: "red" });
+
+  const icon = page.locator(".status-orb .orb-icon-pulse[data-mood='alarm']");
+  const style = (sel: string) =>
+    icon.locator(sel).first().evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { dash: cs.strokeDasharray, anim: cs.animationName, opacity: Number(cs.opacity) };
+    });
+  // Arriving in Alarm shows the dead line at once, not the loop's calm-looking heartbeat.
+  expect((await style(".pulse-beat")).opacity, "no heartbeat on arrival").toBe(0);
+  expect((await style(".pulse-flat")).opacity, "dead line on arrival").toBeGreaterThan(0.5);
+  const flat = await style(".pulse-flat");
+  expect(flat.dash, "dashed line").toBe("2px, 4px");
+  expect(flat.anim, "dashes crawl").toContain("pulse-march");
+  expect((await style(".pulse-x")).anim, "X beats").toContain("orb-drain-x");
+  if (await icon.locator(".pulse-maskline").count()) {
+    expect((await style(".pulse-maskline")).anim, "mask line holds still").toBe("none");
+  }
+});
+
+test("13 — the ☰ drawer grows out to its left, names an action on hover, and slides shut on Escape", async ({
+  mockedPage: page,
+}) => {
+  const menu = page.getByRole("button", { name: "Menu" });
+  const drawer = page.getByRole("group", { name: "App actions" });
+  await expect(drawer).toHaveCount(0);
+
+  // A frozen clock holds each animation phase (useCollapsible ends it with a timer), so a slow
+  // run can't miss the frames. data-anim lands one render after aria-expanded.
+  await page.clock.install();
+  await menu.click();
+  await expect(menu).toHaveAttribute("aria-expanded", "true");
+  await expect(drawer).toHaveAttribute("data-anim", "open");
+  // It animates in rather than appearing: the capsule starts at the ☰'s size.
+  expect(await drawer.evaluate((d) => getComputedStyle(d, "::before").animationName)).toBe("hero-drawer-grow");
+  // The drawer stays mounted for DRAWER_MS: every animation in it, delay included, must fit.
+  const longestMs = async () => {
+    const ends = await drawer.evaluate((d) =>
+      d
+        .getAnimations({ subtree: true })
+        .filter((a) => a instanceof CSSAnimation) // a hover transition may be cut off by the unmount
+        .map((a) => {
+          const t = a.effect!.getComputedTiming();
+          return Number(t.delay) + Number(t.activeDuration);
+        }),
+    );
+    expect(ends.length, "the capsule and the three actions animate").toBeGreaterThanOrEqual(4);
+    return Math.max(...ends);
+  };
+  expect(await longestMs()).toBeLessThanOrEqual(DRAWER_MS);
+
+  // The ☰ has become Lucide's chevron-right (m9 18 6-6-6-6), pointing the way the drawer closes.
+  await expect
+    .poll(() =>
+      menu.evaluate((btn) => {
+        const svg = btn.querySelector("svg")!;
+        return [".hero-burger-top", ".hero-burger-bot"].map((sel) => {
+          const p = svg.querySelector<SVGPathElement>(sel)!;
+          const toSvg = svg.getScreenCTM()!.inverse().multiply(p.getScreenCTM()!);
+          return [0, p.getTotalLength()].map((d) => {
+            const q = new DOMPoint(p.getPointAtLength(d).x, p.getPointAtLength(d).y).matrixTransform(toSvg);
+            return [Math.round(q.x), Math.round(q.y)];
+          });
+        });
+      }),
+    )
+    .toEqual([
+      [[9, 6], [15, 12]],
+      [[9, 18], [15, 12]],
+    ]);
+
+  const left = (name: string) => drawer.getByRole("button", { name }).evaluate((b) => b.getBoundingClientRect().left);
+  const menuLeft = await menu.evaluate((b) => b.getBoundingClientRect().left);
+  const [settings, order, add] = [await left("Settings"), await left("Edit order"), await left("Add list")];
+  expect(settings).toBeLessThan(order);
+  expect(order).toBeLessThan(add);
+  expect(add).toBeLessThan(menuLeft);
+
+  const tip = drawer.getByRole("button", { name: "Settings" }).locator(".hero-tip");
+  await expect(tip).toHaveCSS("opacity", "0");
+  await drawer.getByRole("button", { name: "Settings" }).hover();
+  await expect(tip).toHaveCSS("opacity", "1");
+  await expect(tip).toHaveText("Settings⌘,");
+  // Off the pointer, the › is as muted as the actions beside it.
+  const idle = await drawer.getByRole("button", { name: "Add list" }).evaluate((b) => getComputedStyle(b).color);
+  await expect(menu).toHaveCSS("color", idle);
+
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveAttribute("aria-expanded", "false");
+  await expect(drawer).toHaveAttribute("data-anim", "close");
+  // It slides shut into the ☰ rather than fading where it stands: each action travels right.
+  const closing = () =>
+    drawer.evaluate((d) => ({
+      capsule: getComputedStyle(d, "::before").animationName,
+      action: getComputedStyle(d.querySelector(".hero-drawer-btn")!).animationName,
+    }));
+  await expect.poll(closing).toEqual({ capsule: "hero-drawer-shrink", action: "hero-item-out" });
+  expect(await longestMs()).toBeLessThanOrEqual(DRAWER_MS);
+  await page.clock.runFor(DRAWER_MS + 60);
+  await expect(drawer).toHaveCount(0);
 });
