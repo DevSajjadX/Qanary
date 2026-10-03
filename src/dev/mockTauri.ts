@@ -92,8 +92,8 @@ const CONFIG: Config = {
   blocked_sound: false,
   notify_volume: 70,
   hide_dock: false,
-  status_icon: "rings",
-  tray_filled: false,
+  status_icon: "pulse",
+  tray_filled: true,
   last_changelog_version: null,
 };
 

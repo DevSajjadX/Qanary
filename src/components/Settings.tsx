@@ -175,8 +175,8 @@ export function Settings({
   const [loginInitial, setLoginInitial] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [hideDock, setHideDockState] = useState(false);
-  const [statusIcon, setStatusIcon] = useState<StatusIcon>("rings");
-  const [trayFilled, setTrayFilled] = useState(false);
+  const [statusIcon, setStatusIcon] = useState<StatusIcon>("pulse");
+  const [trayFilled, setTrayFilled] = useState(true);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [configMsg, setConfigMsg] = useState<{

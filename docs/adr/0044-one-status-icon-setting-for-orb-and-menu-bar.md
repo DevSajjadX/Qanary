@@ -17,7 +17,8 @@ menu bar's outline or filled look in another.
 
 - One choice, `status_icon` (`"rings" | "pulse"`), sets both the orb and the menu-bar icon. A
   second choice, `tray_filled` (bool), applies to the menu bar only: the icon drawn bare
-  (Outline) or cut out of a filled rounded square (Filled).
+  (Outline) or cut out of a filled rounded square (Filled). Default: Pulse, Filled (also for
+  configs saved before these settings existed).
 - Both settings live in the config (`models.rs`), because the backend draws the tray. The old
   `tray_style` key and the `qanary-orb-style` `localStorage` key are gone. Both shipped only in
   this unreleased PR, so nothing is migrated.

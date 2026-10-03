@@ -682,18 +682,18 @@ mod settings_tests {
     fn patch_sets_the_status_icon_and_tray_fill() {
         use crate::models::StatusIcon;
         let mut cfg = Config::default();
-        assert_eq!((cfg.status_icon, cfg.tray_filled), (StatusIcon::Rings, false), "default look");
+        assert_eq!((cfg.status_icon, cfg.tray_filled), (StatusIcon::Pulse, true), "default look");
         apply_settings(
             &mut cfg,
-            SettingsPatch { status_icon: Some(StatusIcon::Pulse), tray_filled: Some(true), ..Default::default() },
+            SettingsPatch { status_icon: Some(StatusIcon::Rings), tray_filled: Some(false), ..Default::default() },
         );
-        assert_eq!((cfg.status_icon, cfg.tray_filled), (StatusIcon::Pulse, true));
+        assert_eq!((cfg.status_icon, cfg.tray_filled), (StatusIcon::Rings, false));
         apply_settings(&mut cfg, SettingsPatch::default());
-        assert_eq!((cfg.status_icon, cfg.tray_filled), (StatusIcon::Pulse, true), "omitted = unchanged");
+        assert_eq!((cfg.status_icon, cfg.tray_filled), (StatusIcon::Rings, false), "omitted = unchanged");
     }
 
     /// The frontend sends the icon as a lowercase word; a config file from before the settings
-    /// existed loads as bare Rings.
+    /// existed loads as filled Pulse.
     #[test]
     fn status_icon_wire_format_and_old_configs() {
         use crate::models::StatusIcon;
@@ -705,11 +705,11 @@ mod settings_tests {
         assert!(serde_json::from_str::<SettingsPatch>(r#"{"status_icon":"nope"}"#).is_err());
 
         let mut json = serde_json::to_value(Config::default()).unwrap();
-        assert_eq!((json["status_icon"].as_str(), json["tray_filled"].as_bool()), (Some("rings"), Some(false)));
+        assert_eq!((json["status_icon"].as_str(), json["tray_filled"].as_bool()), (Some("pulse"), Some(true)));
         json.as_object_mut().unwrap().remove("status_icon");
         json.as_object_mut().unwrap().remove("tray_filled");
         let old: Config = serde_json::from_value(json).unwrap();
-        assert_eq!((old.status_icon, old.tray_filled), (StatusIcon::Rings, false));
+        assert_eq!((old.status_icon, old.tray_filled), (StatusIcon::Pulse, true));
     }
 }
 

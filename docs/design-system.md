@@ -39,7 +39,7 @@ same choice ([ADR-0044](adr/0044-one-status-icon-setting-for-orb-and-menu-bar.md
 arrival motion are shared; only the icon differs. Definitions:
 [`orbIcons.tsx`](../src/components/orbIcons.tsx); choice: `status_icon` in the config, applied on Save.
 
-| Mood | Rings (default) | Pulse |
+| Mood | Rings | Pulse (default) |
 |---|---|---|
 | ok | 3 solid rings, breathing | ECG line, a soft light runs along the wave |
 | warn | 2 faded rings + "!"; the dashed ring turns, the "!" blinks | shallower beat, a faster light |

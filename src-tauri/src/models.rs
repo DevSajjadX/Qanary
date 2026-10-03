@@ -179,12 +179,12 @@ pub struct Config {
     #[serde(default)]
     pub hide_dock: bool,
     /// How the status is drawn, by the in-app orb and the menu-bar icon alike (ADR-0044).
-    /// Additive — older configs load as `Rings` via serde default.
+    /// Additive — older configs load as `Pulse` via serde default.
     #[serde(default)]
     pub status_icon: StatusIcon,
     /// Menu bar only: cut the status icon out of a filled rounded square instead of drawing it
-    /// bare. Additive — older configs load as bare (`false`).
-    #[serde(default)]
+    /// bare. Additive — older configs load as filled (`true`).
+    #[serde(default = "default_tray_filled")]
     pub tray_filled: bool,
     /// Last app version we showed the "What's new" changelog for. On startup, if the
     /// running version differs, we show that version's CHANGELOG section once and update
@@ -193,6 +193,9 @@ pub struct Config {
     pub last_changelog_version: Option<String>,
 }
 
+fn default_tray_filled() -> bool {
+    true
+}
 fn default_critical_interval() -> u64 {
     30
 }
@@ -286,7 +289,7 @@ impl Default for Config {
             notify_volume: 100,
             hide_dock: false,
             status_icon: StatusIcon::default(),
-            tray_filled: false,
+            tray_filled: default_tray_filled(),
             last_changelog_version: None,
         }
     }
@@ -365,10 +368,10 @@ pub fn worst_state(states: &[ServiceState]) -> ServiceState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusIcon {
-    /// Concentric rings (the brand's signal mark). The default.
-    #[default]
+    /// Concentric rings (the brand's signal mark).
     Rings,
-    /// A canary heartbeat.
+    /// A canary heartbeat. The default.
+    #[default]
     Pulse,
 }
 

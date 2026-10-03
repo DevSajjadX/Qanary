@@ -569,7 +569,7 @@ function App() {
     >
       <StatusHero
         snapshot={snapshot}
-        icon={config?.status_icon ?? "rings"}
+        icon={config?.status_icon ?? "pulse"}
         onRefresh={api.refreshNow}
         menu={
           <HeroMenu
