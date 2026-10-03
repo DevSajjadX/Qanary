@@ -264,15 +264,19 @@ test("8b — the list count sits as far from the next icon as the icons sit from
   expect(Math.abs((await gaps()).count - normal.count)).toBeLessThan(0.6);
 });
 
-test("8c — the orb's refresh arrow is drawn in the orb icons' frame and stroke", async ({
+test("8c — the orb's refresh arrow is drawn in the orb icons' frame, a little bolder", async ({
   mockedPage: page,
 }) => {
   const look = (sel: string) =>
     page.locator(sel).first().evaluate((el) => {
       const cs = getComputedStyle(el);
-      return [cs.width, cs.height, cs.strokeWidth, el.getAttribute("viewBox")];
+      return { size: [cs.width, cs.height], stroke: parseFloat(cs.strokeWidth), viewBox: el.getAttribute("viewBox") };
     });
-  expect(await look(".orb-refresh svg")).toEqual(await look(".status-orb .orb-icon"));
+  const arrow = await look(".orb-refresh svg");
+  const icon = await look(".status-orb .orb-icon");
+  expect({ size: arrow.size, viewBox: arrow.viewBox }).toEqual({ size: icon.size, viewBox: icon.viewBox });
+  // Bolder than the status icons (2.2 against their 1.5): it is a button's hint, so it should read.
+  expect(arrow.stroke).toBeGreaterThan(icon.stroke);
   // …at 0.85, so it reads as part of the orb rather than a sticker on it.
   await expect(page.locator(".orb-refresh svg")).toHaveCSS("opacity", "0.85");
 });

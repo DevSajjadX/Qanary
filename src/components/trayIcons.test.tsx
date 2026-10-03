@@ -25,8 +25,8 @@ describe("TrayIcon", () => {
       }
     }
     // Busy shares its picture with ok (only the colour differs), so 4 looks × 4 pictures, less the
-    // two Offlines shared across glyphs (one bare Wi-Fi off, one filled).
-    expect(seen.size).toBe(14);
+    // Offline the two filled looks share. (Pulse's bare Offline sits in its frame; Rings' does not.)
+    expect(seen.size).toBe(15);
   });
 
   it("filled looks cut the glyph out of a plate with a mask; bare ones do not", () => {
@@ -37,25 +37,58 @@ describe("TrayIcon", () => {
     }
   });
 
-  it("offline is a Wi-Fi off, struck through, and alarm is not, in both pictures", () => {
-    // The slash runs (4.5,4.5) → (19.5,19.5), possibly pulled in a little.
-    const hasSlash = (icon: "rings" | "pulse", mood: "alarm" | "offline") => {
-      const { container, unmount } = render(<TrayIcon icon={icon} filled={false} mood={mood} />);
-      const found = Array.from(container.querySelectorAll("polyline")).some((p) => {
-        const pts = p.getAttribute("points")!.split(" ").map((q) => q.split(",").map(Number));
-        // Corner to corner: far from the centre at both ends (the X's arms stop well short).
-        return pts.length === 2 && pts[0][0] < 8 && pts[0][1] < 8 && pts[1][0] > 16 && pts[1][1] > 16;
+  it("offline is a Wi-Fi with a \"!\" in every look: three solid arcs, a dot and a bar", () => {
+    for (const { icon, filled } of LOOKS) {
+      const { container, unmount } = render(<TrayIcon icon={icon} filled={filled} mood="offline" />);
+      // The arcs are solid with round ends (no dashes), the dot is the Wi-Fi's, the bar is the "!".
+      const arcs = Array.from(container.querySelectorAll("path")).filter((p) => p.getAttribute("d")!.includes("A"));
+      expect(arcs, `${icon}/${filled}: arcs`).toHaveLength(3);
+      arcs.forEach((a) => {
+        expect(a.getAttribute("stroke-dasharray")).toBeNull();
+        expect(a.getAttribute("stroke-linecap")).toBe("round");
       });
+      expect(container.querySelectorAll("circle[r]").length, `${icon}/${filled}: dot`).toBeGreaterThanOrEqual(1);
+      // No slash: the "!" is Offline's mark. Alarm has no Wi-Fi arcs.
+      expect(container.querySelector("polyline"), `${icon}/${filled}: no slash`).toBeNull();
       unmount();
-      return found;
-    };
-    for (const icon of ["rings", "pulse"] as const) {
-      expect(hasSlash(icon, "offline")).toBe(true);
-      expect(hasSlash(icon, "alarm")).toBe(false);
+      const alarm = render(<TrayIcon icon={icon} filled={filled} mood="alarm" />);
+      expect(
+        Array.from(alarm.container.querySelectorAll("path")).some((p) => p.getAttribute("d")!.includes("A")),
+      ).toBe(false);
+      alarm.unmount();
     }
-    const { container } = render(<TrayIcon icon="pulse" filled={false} mood="offline" />);
-    expect(container.querySelectorAll("path")).toHaveLength(3); // the three Wi-Fi arcs
-    expect(container.querySelector("rect"), "no Pulse frame: one Wi-Fi off for every look").toBeNull();
+    // Pulse keeps its rounded-square frame (the only rounded rect; the mask's white rect has no
+    // corners); Rings keeps a plain outer ring instead.
+    const pulse = render(<TrayIcon icon="pulse" filled={false} mood="offline" />);
+    expect(pulse.container.querySelector("rect[rx]")).not.toBeNull();
+    pulse.unmount();
+    const rings = render(<TrayIcon icon="rings" filled={false} mood="offline" />);
+    expect(rings.container.querySelector("rect[rx]")).toBeNull();
+    expect(rings.container.querySelector('circle[r="10.6"]')).not.toBeNull();
+  });
+
+  it("alarm and heads-up use dots: round-ended dashes shorter than the stroke is wide", () => {
+    const dotted = (icon: "rings" | "pulse", filled: boolean, mood: "warn" | "alarm") => {
+      const { container, unmount } = render(<TrayIcon icon={icon} filled={filled} mood={mood} />);
+      const rings = Array.from(container.querySelectorAll("circle[stroke-dasharray]"));
+      const out = rings.map((r) => ({
+        round: r.getAttribute("stroke-linecap") === "round",
+        dashShorterThanStroke:
+          Number(r.getAttribute("stroke-dasharray")!.split(" ")[0]) < Number(r.getAttribute("stroke-width")),
+      }));
+      const dots = container.querySelectorAll("circle:not([stroke])").length;
+      unmount();
+      return { out, dots };
+    };
+    for (const filled of [false, true]) {
+      for (const mood of ["warn", "alarm"] as const) {
+        const { out } = dotted("rings", filled, mood);
+        expect(out.length).toBeGreaterThan(0);
+        out.forEach((o) => expect(o).toEqual({ round: true, dashShorterThanStroke: true }));
+      }
+      // Pulse alarm is a dead line drawn as four dots, two each side of the X.
+      expect(dotted("pulse", filled, "alarm").dots).toBe(4);
+    }
   });
 
   it("is decorative: hidden from assistive tech", () => {
