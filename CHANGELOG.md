@@ -8,6 +8,31 @@ heading) become that release's notes. Dev-log-only subsections (`## Internal`, `
 `## Development`, `## Chore`, `## CI`, `## Build`, `## More info`) appear on the GitHub
 release page but are hidden from the in-app "What's new" modal.
 
+## [1.0.0]
+
+## What's new
+
+- A new glass look, with a status orb that moves.
+- Pick rings or a pulse for the status icon, in the app and in the menu bar.
+- The menu bar menu shows how each list is doing.
+- Click a service or a list name to check just that one.
+- Lists sit side by side in a wide window.
+- Mac shortcuts: ⌘N new list, ⇧⌘O edit order, ⌘, Settings, ⌘R refresh.
+- Thanks to [Sajjad](https://github.com/DevSajjadX), who designed and built the whole new look.
+
+## Fix
+
+- TCP-only services no longer stop a list from showing as down when the rest of it is blocked or disconnected.
+
+## More info
+
+- [ADR 0032: the Glass redesign](https://github.com/Esi-Abolfazl/Qanary/blob/main/docs/adr/0032-glass-ui-redesign.md). The follow-up decisions are ADR 0033 to ADR 0047.
+
+## Internal
+
+- `pnpm dev` at `/?mock` runs the interface in a browser on sample data. The end-to-end tests use the same mock.
+- pnpm 12.8.1, pinned once in `package.json`.
+
 ## [0.6.5]
 
 ## What's new
