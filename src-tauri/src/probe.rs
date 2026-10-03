@@ -123,18 +123,13 @@ async fn probe_endpoint(
 /// to `Blocked` (see `ServiceState::rank`) — this predicate looks past the dot to the raw
 /// Endpoint states so a partial outage never misreports as total cut-off. Empty → false.
 pub fn is_cut_off(lists: &[ListStatus]) -> bool {
-    let endpoints: Vec<ServiceState> = lists
-        .iter()
-        .flat_map(|l| l.services.iter())
-        .flat_map(|s| s.endpoints.iter())
-        .map(|e| e.state)
-        .collect();
-
-    let any_up = endpoints.contains(&ServiceState::Up);
-    let any_checking = endpoints.contains(&ServiceState::Checking);
-    let any_failing = endpoints.iter().any(|s| s.is_failure());
-
-    !any_up && !any_checking && any_failing
+    crate::models::disconnected(
+        lists
+            .iter()
+            .flat_map(|l| l.services.iter())
+            .flat_map(|s| s.endpoints.iter())
+            .map(|e| e.state),
+    )
 }
 
 /// True when no Endpoint anywhere is still `Checking` — every probe of the round has landed.
@@ -322,7 +317,7 @@ mod tests {
 
     fn list_status_ex(svc_states: &[&[ServiceState]], critical: bool) -> ListStatus {
         let services: Vec<_> = svc_states.iter().map(|s| svc_status(s)).collect();
-        let all_down = !services.is_empty() && services.iter().all(|s| s.fully_failing());
+        let all_down = crate::models::list_all_down(&services);
         ListStatus {
             id: "l".into(),
             name: "l".into(),
@@ -362,11 +357,25 @@ mod tests {
     #[test]
     fn reachable_is_not_a_failure() {
         use ServiceState::*;
-        assert!(!Reachable.is_failure(), "reachable means TCP connected");
-        // A service of only reachable endpoints is not fully failing → list not all_down.
+        // Only TCP-only endpoints: no failure seen, so not down.
         assert!(!svc_status(&[Reachable]).fully_failing());
         assert!(!list_status(&[&[Reachable]]).all_down);
         assert!(!list_status(&[&[Reachable, Up]]).all_down);
+    }
+
+    /// ADR-0048: a TCP-only endpoint is no evidence either way, so it never holds a list up.
+    #[test]
+    fn reachable_never_keeps_a_list_up() {
+        use ServiceState::*;
+        assert!(svc_status(&[Blocked, Reachable]).fully_failing());
+        assert!(list_status(&[&[Blocked, Blocked], &[Reachable]]).all_down);
+        assert!(list_status(&[&[Down], &[Blocked, Reachable]]).all_down);
+        // A verified Up or a probe still in flight still holds it.
+        assert!(!list_status(&[&[Blocked], &[Reachable, Up]]).all_down);
+        assert!(!list_status(&[&[Blocked], &[Reachable, Checking]]).all_down);
+        // A service with no endpoints is no evidence either way.
+        assert!(list_status(&[&[], &[Down]]).all_down);
+        assert!(!list_status(&[&[]]).all_down);
     }
 
     #[tokio::test]
@@ -381,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn fully_failing_requires_all_endpoints_fail() {
+    fn fully_failing_needs_no_up_and_a_failure() {
         use ServiceState::*;
         assert!(svc_status(&[Down, Blocked]).fully_failing());
         assert!(!svc_status(&[Down, Up]).fully_failing());
@@ -390,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn all_down_needs_every_service_fully_failing() {
+    fn all_down_needs_the_whole_list_disconnected() {
         use ServiceState::*;
         // list with one fully-failing and one partially-up service → NOT all_down
         assert!(!list_status(&[&[Down, Down], &[Down, Up]]).all_down);

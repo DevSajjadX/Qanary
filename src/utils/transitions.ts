@@ -45,19 +45,14 @@ export function criticalTransitions(
 }
 
 /**
- * True when every service in a list has at least one endpoint and every endpoint
- * is blocked — the fingerprint of whole-list TLS interception / filtering.
- * A single non-blocked endpoint (up, down, checking, reachable) disqualifies.
+ * True when at least one endpoint in a list is blocked and every other one is blocked or
+ * TCP-only: the fingerprint of whole-list TLS interception / filtering. A TCP-only `reachable`
+ * endpoint is no evidence either way (filtering lets TCP through), as in the backend's
+ * `disconnected` (ADR-0048). An up, down or checking endpoint disqualifies.
  */
 function isFullyBlocked(l: ListStatus): boolean {
-  return (
-    l.services.length > 0 &&
-    l.services.every(
-      (s) =>
-        s.endpoints.length > 0 &&
-        s.endpoints.every((e) => e.state === "blocked"),
-    )
-  );
+  const states = l.services.flatMap((s) => s.endpoints.map((e) => e.state));
+  return states.includes("blocked") && states.every((s) => s === "blocked" || s === "reachable");
 }
 
 /**

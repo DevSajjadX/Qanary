@@ -1,6 +1,6 @@
 # 0024. Cut-off detection — escalate total no-access to red "offline"
 
-- **Status:** accepted
+- **Status:** accepted; the `Reachable`-masking follow-up is fixed by ADR-0048
 - **Date:** 2026-07-15
 - **Deciders:** Esi-Abolfazl
 

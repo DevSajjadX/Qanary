@@ -1,6 +1,6 @@
 # 0023. Notify when a critical list goes fully blocked (TLS interception), opt-in
 
-- **Status:** accepted
+- **Status:** accepted; fully blocked ignores TCP-only endpoints since ADR-0048
 - **Date:** 2026-06-27 (revised 2026-07-15: scope changed from non-critical to critical lists)
 - **Deciders:** Esi-Abolfazl
 

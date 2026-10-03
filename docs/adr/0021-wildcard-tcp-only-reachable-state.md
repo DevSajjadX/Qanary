@@ -1,6 +1,6 @@
 # 0021. TCP-only "reachable" state for wildcard endpoints
 
-- **Status:** accepted
+- **Status:** accepted; the rollup rule (`reachable` never counts towards `all_down`) amended by ADR-0048
 - **Date:** 2026-06-27
 - **Deciders:** Esi-Abolfazl
 

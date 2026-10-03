@@ -317,12 +317,6 @@ pub enum ServiceState {
 }
 
 impl ServiceState {
-    /// `true` for any state that means "can't reach it" (Blocked or Down).
-    /// `Checking` is treated as not-yet-failed so we don't flash an outage on startup.
-    pub fn is_failure(self) -> bool {
-        matches!(self, ServiceState::Blocked | ServiceState::Down)
-    }
-
     /// Display priority for worst-wins rollup: higher = shown.
     /// down(4) > blocked(3) > checking(2) > up(1) > reachable(0)
     /// Failures and Checking dominate as usual. Among settled non-failures, `up` beats
@@ -338,6 +332,22 @@ impl ServiceState {
             ServiceState::Down => 4,
         }
     }
+}
+
+/// True when a set of endpoints is disconnected: none is verified `Up`, none is still `Checking`,
+/// and at least one is `Blocked` or `Down`. A TCP-only `Reachable` counts for neither side:
+/// filtering lets TCP through and breaks TLS, so a connect proves nothing about being cut off
+/// (ADR-0048). The one rule behind a Service's `fully_failing`, a List's `all_down` and cut-off.
+pub fn disconnected(states: impl IntoIterator<Item = ServiceState>) -> bool {
+    let mut any_failing = false;
+    for s in states {
+        match s {
+            ServiceState::Up | ServiceState::Checking => return false,
+            ServiceState::Blocked | ServiceState::Down => any_failing = true,
+            ServiceState::Reachable => {}
+        }
+    }
+    any_failing
 }
 
 /// Worst-wins rollup over a slice of endpoint states.
@@ -384,7 +394,7 @@ pub struct EndpointStatus {
 
 /// Per-service status for the UI.
 /// `state` = worst-wins across all endpoints.
-/// A service is "fully failing" only when ALL endpoints are failing — that feeds `all_down`.
+/// A service is "fully failing" only when its endpoints are `disconnected`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ServiceStatus {
     pub id: String,
@@ -394,13 +404,18 @@ pub struct ServiceStatus {
 }
 
 impl ServiceStatus {
-    /// True when the service has endpoints and every one of them is failing.
+    /// True when the service's endpoints are `disconnected`.
     pub fn fully_failing(&self) -> bool {
-        !self.endpoints.is_empty() && self.endpoints.iter().all(|e| e.state.is_failure())
+        disconnected(self.endpoints.iter().map(|e| e.state))
     }
 }
 
-/// Per-list status + whether every enabled service is fully failing.
+/// A List's `all_down`: its endpoints, across every service, are `disconnected`.
+pub fn list_all_down(services: &[ServiceStatus]) -> bool {
+    disconnected(services.iter().flat_map(|s| s.endpoints.iter().map(|e| e.state)))
+}
+
+/// Per-list status + whether the whole list is down (`list_all_down`).
 #[derive(Debug, Clone, Serialize)]
 pub struct ListStatus {
     pub id: String,

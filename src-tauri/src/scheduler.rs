@@ -389,8 +389,7 @@ fn recompute_delta(snap: &mut Snapshot, list_id: &str, status: ServiceStatus) ->
     let slot = list.services.iter_mut().find(|s| s.id == status.id)?;
     *slot = status.clone();
 
-    // A List is all_down when it has services and every one is fully failing.
-    list.all_down = !list.services.is_empty() && list.services.iter().all(|s| s.fully_failing());
+    list.all_down = crate::models::list_all_down(&list.services);
     let list_all_down = list.all_down; // read before releasing the &mut for the overall recompute
 
     let overall = crate::probe::overall_severity(&snap.lists);

@@ -27,13 +27,14 @@ The Service's displayed dot, computed **worst-wins** over its Endpoint states wi
 precedence `down > blocked > checking > up > reachable`. Reuses the Endpoint-state palette
 (green/blue/orange/red/grey). `reachable` is a non-failure ranked below `up`: a single
 fully-verified `up` Endpoint shows the Service green; blue shows only when *every* Endpoint
-is `reachable` (TCP-only wildcards). A Service is **fully failing** (the separate rollup used
-for List `all_down`) only when *every* Endpoint is failing (blocked or down).
+is `reachable` (TCP-only wildcards). A Service is **fully failing** when its Endpoints are
+**disconnected**: none `up`, none `checking`, at least one `blocked` or `down`. A TCP-only
+`reachable` Endpoint counts for neither side (ADR-0048).
 _Avoid_: health, grade, severity (reserve "severity" for the overall app traffic light)
 
 **List**:
 A named, ordered group of Services (e.g. "Global", "Iran"). Rolls up to `all_down` when
-every Service in it is fully failing (health = red).
+its Endpoints, across every Service, are disconnected (health = red).
 _Avoid_: group, category
 
 **Severity**:
@@ -49,11 +50,12 @@ do not transition. (No longer the *only* notification event — see Blocked-list
 _Avoid_: change, flip, event (when you mean this specific critical-List crossing)
 
 **Fully blocked**:
-A List whose every Service has every Endpoint in `blocked` state — the whole List is
+A List with at least one `blocked` Endpoint and every other Endpoint `blocked` or TCP-only
+`reachable` (ADR-0048). The whole List is
 TCP-reachable but TLS-intercepted (filtering / censorship), distinct from a List that is
 `all_down` via real `down` (no route). A subset of `all_down`. Computed in the Frontend from
 the snapshot's Endpoint states.
-_Avoid_: all-blocked, censored (when you mean this exact every-Endpoint-blocked rollup)
+_Avoid_: all-blocked, censored (when you mean this exact rollup)
 
 **Cut off**:
 The app-wide situation where **no Service anywhere has a verified `up` Endpoint** — every

@@ -115,6 +115,20 @@ describe("blockedTransitions", () => {
     expect(blockedTransitions([prev], [next])).toEqual([]);
   });
 
+  it("a TCP-only endpoint does not stop a list from going fully blocked (ADR-0048)", () => {
+    const blocked: ServiceStatus = mkListWithEndpoints("w", true, "blocked").services[0];
+    const tcpOnly: ServiceStatus = mkListWithEndpoints("w", true, "reachable").services[0];
+    const prev = mkListWithEndpoints("w", true, "up");
+    const next: ListStatus = { ...prev, services: [blocked, { ...tcpOnly, id: "t" }], all_down: true };
+    expect(blockedTransitions([prev], [next])).toEqual([{ id: "w", name: "w", dir: "blocked" }]);
+    // A down endpoint still disqualifies.
+    const down: ServiceStatus = mkListWithEndpoints("w", true, "down").services[0];
+    const mixed: ListStatus = { ...next, services: [...next.services, { ...down, id: "d" }] };
+    expect(blockedTransitions([prev], [mixed])).toEqual([]);
+    // Only TCP-only endpoints: nothing is blocked, so it is not fully blocked.
+    expect(blockedTransitions([prev], [mkListWithEndpoints("w", true, "reachable")])).toEqual([]);
+  });
+
   it("recovery (blocked → up) does NOT fire", () => {
     expect(
       blockedTransitions(

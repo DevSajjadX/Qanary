@@ -1,6 +1,6 @@
 # 0027. One alert per settled probe round — cut-off outranks blocked outranks outage
 
-- **Status:** accepted
+- **Status:** accepted; the `all_down` masking it mentions is fixed by ADR-0048
 - **Date:** 2026-07-27
 - **Deciders:**
 

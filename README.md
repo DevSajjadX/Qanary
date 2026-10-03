@@ -43,7 +43,7 @@ Qanary sends a native desktop notification when a **critical** list changes stat
 
 Two more alerts share those toggles:
 
-- **Blocked** — a critical list whose every endpoint turns blocked (TCP connects, HTTPS fails: the interception fingerprint) gets a dedicated "Blocked" alert instead of the generic outage one. Own toggles, defaulting on.
+- **Blocked** — a critical list whose every endpoint turns blocked, TCP-only endpoints aside (TCP connects, HTTPS fails: the interception fingerprint) gets a dedicated "Blocked" alert instead of the generic outage one. Own toggles, defaulting on.
 - **You're offline** — when nothing at all is reachable, you get one app-wide offline alert. Uses the outage toggles; it has no setting of its own.
 
 **One alert per check round.** Each service probes on its own schedule, so a single round's changes land a few seconds apart. Qanary waits for the round to go quiet (a little longer than the probe timeout, at most 12s) and then speaks **once**, at the worst thing it found: offline outranks blocked, which outranks a plain outage. Losing your connection therefore gives one "You're offline" alert, not one per list. A list still down when you come back online is announced at that point rather than being dropped, under its current name — unless you deleted it or made it non-critical in the meantime — and a later round reaching a worse state alerts again. After your Mac wakes from sleep, Qanary gives the network up to 20s to come back before deciding anything changed, then reports the difference once.
